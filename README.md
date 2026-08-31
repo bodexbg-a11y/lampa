@@ -17,13 +17,11 @@
 
 ## Установка
 
-После включения GitHub Pages добавьте в **Настройки → Расширения → Добавить плагин**:
+Добавьте в **Настройки → Расширения → Добавить плагин**:
 
 ```text
-https://bodexbg-a11y.github.io/lampa/erotic-archive.js
+https://cdn.jsdelivr.net/gh/bodexbg-a11y/lampa@main/erotic-archive.js
 ```
-
-Если Pages ещё не включён: откройте репозиторий GitHub, затем **Settings → Pages → Deploy from a branch → main → / (root)**.
 
 После установки перезапустите Lampa. В главном меню появится пункт **Эротика 18+**.
 
