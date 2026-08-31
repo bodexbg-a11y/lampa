@@ -2,8 +2,8 @@
   {
     "name": "Эротическое кино 18+",
     "author": "Lampa Plugins",
-    "link": "https://raw.githack.com/bodexbg-a11y/lampa/main/erotic-catalog-v31.js",
-    "descr": "Каталог эротических фильмов TMDB с поиском и фильтром по году на одном экране. Открывает стандартную карточку Lampa для внешних источников.",
-    "version": "3.2.0"
+    "link": "https://raw.githack.com/bodexbg-a11y/lampa/main/e32.js",
+    "descr": "Главная страница эротического кино: популярное, лучшие по рейтингу, новинки, поиск внутри каталога и фильтр по году.",
+    "version": "3.3.0"
   }
 ]

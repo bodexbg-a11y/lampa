@@ -21,7 +21,7 @@
 Добавьте в **Настройки → Расширения → Добавить плагин**:
 
 ```text
-https://raw.githack.com/bodexbg-a11y/lampa/main/erotic-catalog-v31.js
+https://raw.githack.com/bodexbg-a11y/lampa/main/e32.js
 ```
 
 После установки перезапустите Lampa. В главном меню появится пункт **Эротика 18+**. Нажатие сразу открывает фильмы; над сеткой находятся нативные selector-кнопки **Поиск** и **Год**.
@@ -36,6 +36,6 @@ https://raw.githack.com/bodexbg-a11y/lampa/main/erotic-catalog-v31.js
 ## Проверка
 
 ```bash
-node --check erotic-catalog-v31.js
+node --check e32.js
 python3 -m json.tool extensions.json
 ```
