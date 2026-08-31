@@ -1,12 +1,12 @@
 (function () {
     'use strict';
 
-    var COMPONENT_ID = 'erotic_catalog_v31_component';
-    var EROTIC_KEYWORD_ID = 2916;
-    var VERSION = '3.1.0';
+    var COMPONENT_ID = 'erotic_catalog_v32_component';
+    var EROTIC_KEYWORDS = '256466|302868|298666|207767|207807|343572|190370|240530|11190';
+    var VERSION = '3.2.0';
 
-    if (window.plugin_erotic_catalog_v31_ready) return;
-    window.plugin_erotic_catalog_v31_ready = true;
+    if (window.plugin_erotic_catalog_v32_ready) return;
+    window.plugin_erotic_catalog_v32_ready = true;
 
     function notify(message) {
         if (Lampa.Noty && Lampa.Noty.show) Lampa.Noty.show(message);
@@ -30,8 +30,8 @@
                 '&language=' + encodeURIComponent(language()) + yearParam;
         } else {
             path = 'discover/movie?api_key=' + Lampa.TMDB.key() +
-                '&with_keywords=' + EROTIC_KEYWORD_ID +
-                '&include_adult=true&sort_by=popularity.desc&page=' + page +
+                '&with_keywords=' + encodeURIComponent(EROTIC_KEYWORDS) +
+                '&include_adult=true&sort_by=vote_average.desc&vote_count.gte=20&page=' + page +
                 '&language=' + encodeURIComponent(language()) + yearParam;
         }
 
@@ -46,36 +46,6 @@
         movie.name = movie.title;
         movie.params = movie.params || {};
         return movie;
-    }
-
-    function actionPoster(icon, label, color) {
-        var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="500" height="750" viewBox="0 0 500 750">' +
-            '<defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop stop-color="' + color + '"/><stop offset="1" stop-color="#16191d"/></linearGradient></defs>' +
-            '<rect width="500" height="750" rx="36" fill="url(#g)"/>' +
-            '<text x="250" y="325" text-anchor="middle" font-size="150" fill="white">' + icon + '</text>' +
-            '<text x="250" y="470" text-anchor="middle" font-family="Arial,sans-serif" font-weight="700" font-size="52" fill="white">' + label + '</text>' +
-            '</svg>';
-        return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
-    }
-
-    function actionCards(object) {
-        var searchTitle = object.search_query ? 'Поиск: ' + object.search_query : 'Поиск';
-        var yearTitle = object.filter_year ? 'Год: ' + object.filter_year : 'Выбрать год';
-
-        return [
-            {
-                title: searchTitle,
-                poster: actionPoster('⌕', 'ПОИСК', '#7d285d'),
-                erotic_action: 'search',
-                params: {}
-            },
-            {
-                title: yearTitle,
-                poster: actionPoster('▣', object.filter_year || 'ГОД', '#294d8f'),
-                erotic_action: 'year',
-                params: {}
-            }
-        ];
     }
 
     function openMovie(movie) {
@@ -145,6 +115,38 @@
         });
     }
 
+    function createToolbar(object) {
+        var filter = new Lampa.Filter({
+            search: object.search_query || '',
+            movie: {
+                id: 'erotic_catalog_filter',
+                title: 'Эротическое кино',
+                release_date: '',
+                names: [],
+                alternative_titles: { titles: [] }
+            }
+        });
+        var render = filter.render();
+        var searchButton = render.find('.filter--search');
+        var yearButton = render.find('.filter--filter');
+        var sortButton = render.find('.filter--sort');
+
+        sortButton.removeClass('selector').addClass('hide');
+
+        searchButton.off('hover:enter').on('hover:enter', function () {
+            askSearch(object);
+        });
+        searchButton.find('div').text(object.search_query || 'Поиск').removeClass('hide');
+
+        yearButton.off('hover:enter').on('hover:enter', function () {
+            askYear(object);
+        });
+        yearButton.find('span').text('Год');
+        yearButton.find('div').text(object.filter_year || 'Все').removeClass('hide');
+
+        return filter;
+    }
+
     function parseResponse(response) {
         var data = typeof response === 'string' ? JSON.parse(response) : response;
         data = data || {};
@@ -155,11 +157,12 @@
 
     function Catalog(object) {
         var network = new Lampa.Reguest();
+        var toolbar;
         var comp = Lampa.Maker.make('Category', object, function (module) {
             return module.toggle(module.MASK.base, 'Pagination');
         });
 
-        function load(page, complete, error, includeActions) {
+        function load(page, complete, error) {
             network.timeout(20000);
             network.silent(apiUrl(object, page), function (response) {
                 var data;
@@ -169,7 +172,6 @@
                     return error('TMDB вернул некорректный ответ');
                 }
 
-                if (includeActions) data.results = actionCards(object).concat(data.results);
                 complete(data);
             }, function () {
                 error('Не удалось загрузить каталог TMDB');
@@ -178,33 +180,37 @@
 
         comp.use({
             onCreate: function () {
-                load(object.page || 1, this.build.bind(this), this.empty.bind(this), true);
+                toolbar = createToolbar(object);
+                this.scroll.prepend(toolbar.render());
+                load(object.page || 1, this.build.bind(this), this.empty.bind(this));
             },
             onNext: function (resolve, reject) {
-                load(object.page || 1, resolve.bind(this), reject.bind(this), false);
+                load(object.page || 1, resolve.bind(this), reject.bind(this));
             },
             onInstance: function (card, data) {
                 card.use({
-                    onlyEnter: function () {
-                        if (data.erotic_action === 'search') askSearch(object);
-                        else if (data.erotic_action === 'year') askYear(object);
-                        else openMovie(data);
-                    },
+                    onlyEnter: function () { openMovie(data); },
                     onFocus: function () {
-                        if (!data.erotic_action && Lampa.Background && Lampa.Utils.cardImgBackground) {
+                        if (Lampa.Background && Lampa.Utils.cardImgBackground) {
                             Lampa.Background.change(Lampa.Utils.cardImgBackground(data));
                         }
                     }
                 });
             },
-            onDestroy: function () { network.clear(); }
+            onScroll: function () {
+                if (Lampa.Controller.own(this)) Lampa.Controller.collectionSet(this.scroll.render(true));
+            },
+            onDestroy: function () {
+                network.clear();
+                if (toolbar) toolbar.destroy();
+            }
         });
 
         return comp;
     }
 
     function init() {
-        if (!window.Lampa || !Lampa.Component || !Lampa.Menu || !Lampa.TMDB || !Lampa.Maker) {
+        if (!window.Lampa || !Lampa.Component || !Lampa.Menu || !Lampa.TMDB || !Lampa.Maker || !Lampa.Filter) {
             return setTimeout(init, 200);
         }
 
