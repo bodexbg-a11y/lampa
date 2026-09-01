@@ -5,5 +5,12 @@
     "link": "https://raw.githack.com/bodexbg-a11y/lampa/main/e32.js",
     "descr": "Главная страница эротического кино: популярное, лучшие по рейтингу, новинки, поиск внутри каталога и фильтр по году.",
     "version": "3.3.0"
+  },
+  {
+    "name": "Русь сериалы",
+    "author": "Lampa Plugins",
+    "link": "https://cdn.jsdelivr.net/gh/bodexbg-a11y/lampa/rus-series.js",
+    "descr": "Главная страница сериалов TMDB: сейчас в топе, лучшие по рейтингу, новинки и поиск только по сериалам.",
+    "version": "1.0.0"
   }
 ]
