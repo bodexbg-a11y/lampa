@@ -3,7 +3,7 @@
     'use strict';
 
     var COMPONENT_ID = 'rus_series_v2_component';
-    var VERSION = '2.0.0';
+    var VERSION = '2.1.0';
 
     if (window.plugin_rus_series_v2_ready) return;
     window.plugin_rus_series_v2_ready = true;
@@ -26,6 +26,13 @@
     function popularRussianUrl() {
         return api('discover/tv?include_adult=false&page=1&sort_by=popularity.desc' +
             '&with_origin_country=RU&with_original_language=ru');
+    }
+
+    function newTntSeriesUrl() {
+        return api('discover/tv?include_adult=false&page=1&sort_by=first_air_date.desc' +
+            '&with_networks=1191&with_origin_country=RU&with_original_language=ru' +
+            '&without_genres=10763%2C10764%2C10767' +
+            '&first_air_date.lte=' + new Date().toISOString().slice(0, 10));
     }
 
     function discoverUrl(sort, votes, newest) {
@@ -168,9 +175,10 @@
 
         function loadHome(complete, error) {
             var configs = [
-                { title: 'Сейчас смотрят', url: popularRussianUrl() },
+                { title: 'Новые российские сериалы', url: discoverUrl('first_air_date.desc', 10, true) },
+                { title: 'Новые сериалы на ТНТ', url: newTntSeriesUrl() },
                 { title: 'Лучшие российские сериалы', url: discoverUrl('vote_average.desc', 300, false) },
-                { title: 'Новые российские сериалы', url: discoverUrl('first_air_date.desc', 10, true) }
+                { title: 'Сейчас смотрят', url: popularRussianUrl() }
             ];
             var rows = new Array(configs.length);
             var pending = configs.length;
