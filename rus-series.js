@@ -2,7 +2,7 @@
     'use strict';
 
     var COMPONENT_ID = 'rus_series_v1_component';
-    var VERSION = '1.0.0';
+    var VERSION = '1.1.0';
 
     if (window.plugin_rus_series_v1_ready) return;
     window.plugin_rus_series_v1_ready = true;
@@ -22,18 +22,25 @@
             'api_key=' + Lampa.TMDB.key() + '&language=' + encodeURIComponent(language()));
     }
 
-    function trendingUrl() {
-        return api('trending/tv/day?page=1');
+    function popularRussianUrl() {
+        return api('discover/tv?include_adult=false&page=1&sort_by=popularity.desc' +
+            '&with_origin_country=RU&with_original_language=ru');
     }
 
     function discoverUrl(sort, votes, newest) {
         var date = newest ? '&first_air_date.lte=' + new Date().toISOString().slice(0, 10) : '';
-        return api('discover/tv?include_adult=true&page=1&sort_by=' + encodeURIComponent(sort) +
+        return api('discover/tv?include_adult=false&page=1&sort_by=' + encodeURIComponent(sort) +
+            '&with_origin_country=RU&with_original_language=ru' +
             '&vote_count.gte=' + (votes || 0) + date);
     }
 
     function searchUrl(query) {
-        return api('search/tv?include_adult=true&page=1&query=' + encodeURIComponent(query));
+        return api('search/tv?include_adult=false&page=1&query=' + encodeURIComponent(query));
+    }
+
+    function isRussianSeries(item) {
+        var countries = item.origin_country || [];
+        return countries.indexOf('RU') >= 0;
     }
 
     function prepareSeries(item) {
@@ -49,7 +56,7 @@
     function parseResponse(response) {
         var data = typeof response === 'string' ? JSON.parse(response) : response;
         data = data || {};
-        data.results = (data.results || []).map(prepareSeries);
+        data.results = (data.results || []).filter(isRussianSeries).map(prepareSeries);
         return data;
     }
 
@@ -160,9 +167,9 @@
 
         function loadHome(complete, error) {
             var configs = [
-                { title: 'Сейчас в топе', url: trendingUrl() },
-                { title: 'Лучшие по рейтингу', url: discoverUrl('vote_average.desc', 1000, false) },
-                { title: 'Новинки', url: discoverUrl('first_air_date.desc', 20, true) }
+                { title: 'Сейчас смотрят', url: popularRussianUrl() },
+                { title: 'Лучшие российские сериалы', url: discoverUrl('vote_average.desc', 300, false) },
+                { title: 'Новые российские сериалы', url: discoverUrl('first_air_date.desc', 10, true) }
             ];
             var rows = new Array(configs.length);
             var pending = configs.length;
