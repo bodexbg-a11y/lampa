@@ -2,9 +2,9 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.5.0';
-    var COMPONENT_ID = 'adult_catalog_component_150';
-    var EMBED_COMPONENT_ID = 'adult_embed_player_component_150';
+    var VERSION = '1.5.1';
+    var COMPONENT_ID = 'adult_catalog_component_151';
+    var EMBED_COMPONENT_ID = 'adult_embed_player_component_151';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
@@ -219,6 +219,8 @@
             poster: movie.poster,
             background_image: movie.background_image,
             tagline: movie.studio ? 'Студия: ' + movie.studio : '',
+            production_countries: [],
+            origin_country: [],
             genres: (movie.tags || []).slice(0, 8).map(function (name, index) {
                 return { id: index + 1, name: name };
             }),
