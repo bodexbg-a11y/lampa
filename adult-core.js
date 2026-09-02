@@ -2,11 +2,11 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.3.1';
-    var COMPONENT_ID = 'adult_catalog_component_131';
-    var DETAIL_COMPONENT_ID = 'adult_catalog_detail_component_131';
+    var VERSION = '1.4.0';
+    var COMPONENT_ID = 'adult_catalog_component_140';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
+    var detailCache = {};
 
     // The old loader set a boolean before the menu was actually registered.
     // A failed/early load therefore blocked every subsequent update in the same
@@ -137,66 +137,112 @@
     }
 
     function openDetails(movie) {
-        Lampa.Activity.push({
-            url: 'adult-detail/' + movie.id,
-            title: movie.title,
-            component: DETAIL_COMPONENT_ID,
-            movie: movie
-        });
+        movie = prepareMovie(movie);
+        detailCache[movie.id] = movie;
+        Lampa.Router.call('full', standardMovie(movie));
     }
 
-    function Detail(object) {
-        var movie = prepareMovie(object.movie || {});
-        var scroll = new Lampa.Scroll({ mask: true, over: true });
-        var html = $('<div class="adult-detail-screen"></div>');
-        var last;
-        var duration = movie.duration ? Math.round(movie.duration / 60) + ' мин.' : 'не указана';
-        var rating = movie.rating ? Number(movie.rating).toFixed(1) : 'нет';
-        var poster = movie.poster ? '<img src="' + escapeHtml(movie.poster) + '" style="width:16em;max-height:24em;object-fit:cover;border-radius:.45em;margin-right:2em" />' : '';
-        var markup = '<div style="padding:2.2em 3em 4em;max-width:95em">' +
-            '<div style="display:flex;align-items:flex-start">' + poster +
-            '<div style="font-size:1.1em;line-height:1.5;max-width:55em">' +
-            '<div style="font-size:2.1em;font-weight:600;line-height:1.15;margin-bottom:.7em">' + escapeHtml(movie.title) + '</div>' +
-            '<div><b>Год:</b> ' + escapeHtml(movie.year || 'не указан') + '</div>' +
-            '<div><b>Студия:</b> ' + escapeHtml(movie.studio || 'не указана') + '</div>' +
-            '<div><b>Режиссёр:</b> ' + escapeHtml(joined(movie.directors, 'не указан')) + '</div>' +
-            '<div><b>Продолжительность:</b> ' + escapeHtml(duration) + '</div>' +
-            '<div><b>Рейтинг:</b> ' + escapeHtml(rating) + '</div>' +
-            '<div style="margin-top:.6em"><b>Исполнители:</b> ' + escapeHtml(joined(movie.performers, 'не указаны')) + '</div>' +
-            '<div style="margin-top:.6em"><b>Теги:</b> ' + escapeHtml(joined(movie.tags, 'не указаны')) + '</div>' +
-            '<div class="adult-detail-play selector" style="margin-top:1.4em;padding:.8em 1.4em;background:#fff;color:#111;border-radius:.35em;display:inline-block;font-weight:600">Смотреть</div>' +
-            '</div></div>' +
-            '<div style="margin-top:1.2em;font-size:1.05em;line-height:1.5"><b>Описание</b><br>' +
-            escapeHtml(movie.description || 'Описание в базе отсутствует.') + '</div></div>';
-        html.html(markup);
-        html.find('.adult-detail-play').on('hover:focus', function () { last = this; });
-        html.find('.adult-detail-play').on('hover:enter', function () { showSources(movie); });
-        scroll.append(html);
+    function personId(name, index) {
+        var hash = 0;
+        var value = String(name || '') + ':' + index;
+        var i;
+        for (i = 0; i < value.length; i++) hash = ((hash << 5) - hash + value.charCodeAt(i)) | 0;
+        return Math.abs(hash) + 1000000;
+    }
 
-        this.create = function () { return this.render(); };
-        this.render = function () { return scroll.render(); };
-        this.start = function () {
-            var component = this;
-            Lampa.Controller.add('adult_detail', {
-                link: component,
-                toggle: function () {
-                    Lampa.Controller.collectionSet(html[0]);
-                    Lampa.Controller.collectionFocus(last || false, html[0]);
-                },
-                left: function () { if (Navigator.canmove('left')) Navigator.move('left'); },
-                right: function () { if (Navigator.canmove('right')) Navigator.move('right'); },
-                up: function () { if (Navigator.canmove('up')) Navigator.move('up'); else Lampa.Controller.toggle('head'); },
-                down: function () { if (Navigator.canmove('down')) Navigator.move('down'); },
-                back: function () { Lampa.Activity.backward(); }
+    function standardPerson(name, index, department, job) {
+        return {
+            id: personId(name, index),
+            name: name,
+            original_name: name,
+            known_for_department: department,
+            job: job || '',
+            character: '',
+            profile_path: '',
+            source: 'adult_catalog'
+        };
+    }
+
+    function standardMovie(movie) {
+        movie = prepareMovie(movie);
+        var rating = Number(movie.rating || 0);
+        if (rating > 10) rating = rating / 10;
+        return {
+            id: movie.id,
+            source: 'adult_catalog',
+            name: movie.title,
+            title: movie.title,
+            original_title: movie.title,
+            release_date: movie.release_date,
+            overview: movie.description || 'Описание в базе отсутствует.',
+            runtime: movie.duration ? Math.round(Number(movie.duration) / 60) : 0,
+            vote_average: rating,
+            adult: true,
+            img: movie.poster,
+            poster: movie.poster,
+            background_image: movie.background_image,
+            tagline: movie.studio ? 'Студия: ' + movie.studio : '',
+            genres: (movie.tags || []).slice(0, 8).map(function (name, index) {
+                return { id: index + 1, name: name };
+            }),
+            keywords: { keywords: [] },
+            adult_catalog_data: movie
+        };
+    }
+
+    function fullData(movie) {
+        return {
+            movie: standardMovie(movie),
+            persons: {
+                crew: (movie.directors || []).map(function (name, index) {
+                    return standardPerson(name, index, 'Directing', 'Director');
+                }),
+                cast: (movie.performers || []).map(function (name, index) {
+                    return standardPerson(name, index, 'Acting', '');
+                })
+            }
+        };
+    }
+
+    function registerAdultSource() {
+        Lampa.Api.sources.adult_catalog = {
+            full: function (params, complete, error) {
+                var cached = detailCache[params.id] || (params.card && params.card.adult_catalog_data);
+                if (cached) return complete(fullData(cached));
+                var network = new Lampa.Reguest();
+                network.timeout(20000);
+                network.silent(apiUrl('/api/movie', { id: params.id }), function (response) {
+                    try {
+                        var data = typeof response === 'string' ? JSON.parse(response) : response;
+                        var movie = prepareMovie(data.result || {});
+                        if (!movie.id) return error();
+                        detailCache[movie.id] = movie;
+                        complete(fullData(movie));
+                    } catch (e) { error(); }
+                }, error);
+            },
+            person: function (params, complete, error) { error(); },
+            clear: function () {}
+        };
+    }
+
+    function registerFullScreenButton() {
+        Lampa.Listener.follow('full', function (event) {
+            if (event.type !== 'complite' || !event.data || !event.data.movie || event.data.movie.source !== 'adult_catalog') return;
+            var movie = detailCache[event.data.movie.id] || event.data.movie.adult_catalog_data;
+            if (!movie) return;
+            var body = event.body || (event.object && event.object.activity && event.object.activity.render());
+            if (!body || !body.find) return;
+            var container = body.find('.buttons--container');
+            container.find('.adult-catalog-source').remove();
+            var button = $('<div class="full-start__button selector adult-catalog-source">' +
+                '<svg><use xlink:href="#sprite-play"></use></svg><span>Источники 18+</span></div>');
+            button.on('hover:enter', function () {
+                showSources(movie);
             });
-            Lampa.Controller.toggle('adult_detail');
-        };
-        this.pause = function () {};
-        this.stop = function () {};
-        this.destroy = function () {
-            scroll.destroy();
-            html.remove();
-        };
+            container.append(button);
+            body.find('.source--name').first().text('TPDB');
+        });
     }
 
     function showDetails(movie) {
@@ -420,15 +466,16 @@
 
     function init() {
         if (initialized) return;
-        if (!window.Lampa || !Lampa.Component || !Lampa.Menu || !Lampa.Maker || !Lampa.Filter) {
+        if (!window.Lampa || !Lampa.Component || !Lampa.Menu || !Lampa.Maker || !Lampa.Filter || !Lampa.Api || !Lampa.Router) {
             return setTimeout(init, 200);
         }
         if (!Lampa.Manifest || Lampa.Manifest.app_digital < 300) {
             return notify('Плагину «Полное 18+» требуется Lampa 3.0 или новее');
         }
         initialized = true;
+        registerAdultSource();
+        registerFullScreenButton();
         Lampa.Component.add(COMPONENT_ID, Catalog);
-        Lampa.Component.add(DETAIL_COMPONENT_ID, Detail);
         var icon = '<svg viewBox="0 0 24 24" width="34" height="34"><path fill="currentColor" d="M8 5v14l11-7z"/><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
         Lampa.Menu.addButton(icon, 'Полное 18+ v' + VERSION, confirmAge);
         window.plugin_adult_catalog_ready = true;
