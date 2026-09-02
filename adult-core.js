@@ -3,8 +3,9 @@
     'use strict';
 
     var COMPONENT_ID = 'adult_catalog_component';
+    var DETAIL_COMPONENT_ID = 'adult_catalog_detail_component';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
-    var VERSION = '1.2.0';
+    var VERSION = '1.3.0';
 
     if (window.plugin_adult_catalog_ready) return;
     window.plugin_adult_catalog_ready = true;
@@ -132,14 +133,27 @@
         });
     }
 
-    function showDetails(movie) {
-        var controller = Lampa.Controller.enabled().name;
+    function openDetails(movie) {
+        Lampa.Activity.push({
+            url: 'adult-detail/' + movie.id,
+            title: movie.title,
+            component: DETAIL_COMPONENT_ID,
+            movie: movie
+        });
+    }
+
+    function Detail(object) {
+        var movie = prepareMovie(object.movie || {});
+        var scroll = new Lampa.Scroll({ mask: true, over: true });
+        var html = $('<div class="adult-detail-screen"></div>');
+        var last;
         var duration = movie.duration ? Math.round(movie.duration / 60) + ' мин.' : 'не указана';
         var rating = movie.rating ? Number(movie.rating).toFixed(1) : 'нет';
-        var content = $('<div class="adult-catalog-details"></div>');
-        var poster = movie.poster ? '<img src="' + escapeHtml(movie.poster) + '" style="width:12em;max-height:18em;object-fit:cover;border-radius:.4em;margin-right:1.5em" />' : '';
-        var html = '<div style="display:flex;align-items:flex-start">' + poster +
-            '<div style="font-size:1.05em;line-height:1.45">' +
+        var poster = movie.poster ? '<img src="' + escapeHtml(movie.poster) + '" style="width:16em;max-height:24em;object-fit:cover;border-radius:.45em;margin-right:2em" />' : '';
+        var markup = '<div style="padding:2.2em 3em 4em;max-width:95em">' +
+            '<div style="display:flex;align-items:flex-start">' + poster +
+            '<div style="font-size:1.1em;line-height:1.5;max-width:55em">' +
+            '<div style="font-size:2.1em;font-weight:600;line-height:1.15;margin-bottom:.7em">' + escapeHtml(movie.title) + '</div>' +
             '<div><b>Год:</b> ' + escapeHtml(movie.year || 'не указан') + '</div>' +
             '<div><b>Студия:</b> ' + escapeHtml(movie.studio || 'не указана') + '</div>' +
             '<div><b>Режиссёр:</b> ' + escapeHtml(joined(movie.directors, 'не указан')) + '</div>' +
@@ -147,28 +161,43 @@
             '<div><b>Рейтинг:</b> ' + escapeHtml(rating) + '</div>' +
             '<div style="margin-top:.6em"><b>Исполнители:</b> ' + escapeHtml(joined(movie.performers, 'не указаны')) + '</div>' +
             '<div style="margin-top:.6em"><b>Теги:</b> ' + escapeHtml(joined(movie.tags, 'не указаны')) + '</div>' +
+            '<div class="adult-detail-play selector" style="margin-top:1.4em;padding:.8em 1.4em;background:#fff;color:#111;border-radius:.35em;display:inline-block;font-weight:600">Смотреть</div>' +
             '</div></div>' +
             '<div style="margin-top:1.2em;font-size:1.05em;line-height:1.5"><b>Описание</b><br>' +
-            escapeHtml(movie.description || 'Описание в базе отсутствует.') + '</div>';
-        content.html(html);
+            escapeHtml(movie.description || 'Описание в базе отсутствует.') + '</div></div>';
+        html.html(markup);
+        html.find('.adult-detail-play').on('hover:focus', function () { last = this; });
+        html.find('.adult-detail-play').on('hover:enter', function () { showSources(movie); });
+        scroll.append(html);
 
-        var sourceButton = $('<div class="selector" style="margin-top:1.4em;padding:.8em 1.2em;background:rgba(255,255,255,.15);border-radius:.35em;display:inline-block">Источники</div>');
-        sourceButton.on('hover:enter', function () {
-            Lampa.Modal.close();
-            Lampa.Controller.toggle(controller);
-            showSources(movie);
-        });
-        content.append(sourceButton);
+        this.create = function () { return this.render(); };
+        this.render = function () { return scroll.render(); };
+        this.start = function () {
+            var component = this;
+            Lampa.Controller.add('adult_detail', {
+                link: component,
+                toggle: function () {
+                    Lampa.Controller.collectionSet(html[0]);
+                    Lampa.Controller.collectionFocus(last || false, html[0]);
+                },
+                left: function () { if (Navigator.canmove('left')) Navigator.move('left'); },
+                right: function () { if (Navigator.canmove('right')) Navigator.move('right'); },
+                up: function () { if (Navigator.canmove('up')) Navigator.move('up'); else Lampa.Controller.toggle('head'); },
+                down: function () { if (Navigator.canmove('down')) Navigator.move('down'); },
+                back: function () { Lampa.Activity.backward(); }
+            });
+            Lampa.Controller.toggle('adult_detail');
+        };
+        this.pause = function () {};
+        this.stop = function () {};
+        this.destroy = function () {
+            scroll.destroy();
+            html.remove();
+        };
+    }
 
-        Lampa.Modal.open({
-            title: movie.title,
-            html: content,
-            size: 'large',
-            onBack: function () {
-                Lampa.Modal.close();
-                Lampa.Controller.toggle(controller);
-            }
-        });
+    function showDetails(movie) {
+        openDetails(movie);
     }
 
     function openMovie(movie) {
@@ -394,6 +423,7 @@
             return notify('Плагину «Полное 18+» требуется Lampa 3.0 или новее');
         }
         Lampa.Component.add(COMPONENT_ID, Catalog);
+        Lampa.Component.add(DETAIL_COMPONENT_ID, Detail);
         var icon = '<svg viewBox="0 0 24 24" width="34" height="34"><path fill="currentColor" d="M8 5v14l11-7z"/><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
         Lampa.Menu.addButton(icon, 'Полное 18+', confirmAge);
         console.log('Adult Catalog plugin ' + VERSION + ' initialized');

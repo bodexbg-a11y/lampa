@@ -1,6 +1,8 @@
 'use strict';
 
 const http = require('node:http');
+const fs = require('node:fs');
+const path = require('node:path');
 const { URL } = require('node:url');
 
 const PORT = Number(process.env.PORT || 3000);
@@ -11,6 +13,7 @@ const CACHE_MAX = 200;
 const RATE_LIMIT = 90;
 const cache = new Map();
 const rates = new Map();
+const PLUGIN_FILE = path.join(__dirname, 'adult-core.js');
 
 function json(res, status, body) {
     const payload = JSON.stringify(body);
@@ -21,6 +24,25 @@ function json(res, status, body) {
         'Access-Control-Allow-Methods': 'GET, OPTIONS',
         'Access-Control-Allow-Headers': 'Content-Type',
         'Cache-Control': status === 200 ? 'public, max-age=120' : 'no-store',
+        'X-Content-Type-Options': 'nosniff'
+    });
+    res.end(payload);
+}
+
+function javascript(res) {
+    let payload;
+    try {
+        payload = fs.readFileSync(PLUGIN_FILE);
+    } catch (error) {
+        return json(res, 500, { error: 'Plugin file is unavailable' });
+    }
+    res.writeHead(200, {
+        'Content-Type': 'application/javascript; charset=utf-8',
+        'Content-Length': payload.length,
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+        Pragma: 'no-cache',
+        Expires: '0',
         'X-Content-Type-Options': 'nosniff'
     });
     res.end(payload);
@@ -259,6 +281,7 @@ const server = http.createServer(async (req, res) => {
         if (url.pathname === '/' || url.pathname === '/health') {
             return json(res, 200, { ok: true, service: 'lampa-adult-catalog', configured: Boolean(TPDB_API_TOKEN) });
         }
+        if (url.pathname === '/plugin.js') return javascript(res);
         if (url.pathname === '/api/movies') return await movies(url, res);
         if (url.pathname === '/api/movie') return await movie(url, res);
         if (url.pathname === '/api/sources') return await sourceSearch(url, res);
