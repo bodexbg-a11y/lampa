@@ -75,6 +75,24 @@ function backgroundUrl(item) {
 
 function mapMovie(item) {
     const date = cleanText(item.date, 10);
+    const sources = [];
+    const seenSources = new Set();
+
+    function addSource(title, url, kind) {
+        if (!/^https?:\/\//i.test(url || '') || seenSources.has(url)) return;
+        seenSources.add(url);
+        sources.push({ title: cleanText(title, 160), url, kind });
+    }
+
+    addSource('Официальная страница' + (item.site && item.site.name ? ' — ' + item.site.name : ''), item.url, 'page');
+    addSource('Официальное превью', item.trailer, 'preview');
+    (Array.isArray(item.links) ? item.links : []).forEach((link, index) => {
+        if (typeof link === 'string') addSource(`Дополнительная ссылка ${index + 1}`, link, 'page');
+        else if (link && typeof link === 'object') {
+            addSource(link.title || link.name || `Дополнительная ссылка ${index + 1}`, link.url || link.href, 'page');
+        }
+    });
+
     return {
         id: cleanText(item.id || item._id, 100),
         title: cleanText(item.title, 300) || 'Без названия',
@@ -86,10 +104,12 @@ function mapMovie(item) {
         rating: Number(item.rating || 0),
         duration: Number(item.duration || 0),
         studio: cleanText(item.site && item.site.name, 200),
+        directors: Array.isArray(item.directors) ? item.directors.slice(0, 20).map((director) => cleanText(director.name, 150)).filter(Boolean) : [],
         tags: Array.isArray(item.tags) ? item.tags.slice(0, 50).map((tag) => cleanText(tag.name, 100)).filter(Boolean) : [],
         performers: Array.isArray(item.performers) ? item.performers.slice(0, 50).map((person) => cleanText(person.name, 150)).filter(Boolean) : [],
         source_url: /^https?:\/\//i.test(item.url || '') ? item.url : '',
-        preview_url: /^https?:\/\//i.test(item.trailer || '') ? item.trailer : ''
+        preview_url: /^https?:\/\//i.test(item.trailer || '') ? item.trailer : '',
+        sources
     };
 }
 

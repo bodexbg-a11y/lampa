@@ -4,7 +4,7 @@
 
     var COMPONENT_ID = 'adult_catalog_component';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
-    var VERSION = '1.0.0';
+    var VERSION = '1.1.0';
 
     if (window.plugin_adult_catalog_ready) return;
     window.plugin_adult_catalog_ready = true;
@@ -38,6 +38,19 @@
         return movie;
     }
 
+    function escapeHtml(value) {
+        return String(value || '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    function joined(items, empty) {
+        return Array.isArray(items) && items.length ? items.join(', ') : empty;
+    }
+
     function parseResponse(response) {
         var data = typeof response === 'string' ? JSON.parse(response) : response;
         data = data || {};
@@ -59,26 +72,94 @@
         Lampa.Player.callback(function () { Lampa.Controller.toggle(controller); });
     }
 
-    function openMovie(movie) {
+    function showSources(movie) {
         var controller = Lampa.Controller.enabled().name;
-        var items = [];
-        if (movie.preview_url) items.push({ title: 'Смотреть официальное превью', action: 'preview' });
-        if (movie.source_url) items.push({ title: 'Открыть страницу источника', action: 'source' });
-        items.push({
-            title: (movie.year ? movie.year + ' • ' : '') + (movie.studio || 'Студия не указана'),
-            action: 'info'
+        var items = (movie.sources || []).map(function (source) {
+            return {
+                title: source.title || (source.kind === 'preview' ? 'Официальное превью' : 'Страница источника'),
+                source: source
+            };
         });
 
+        if (!items.length && movie.preview_url) {
+            items.push({ title: 'Официальное превью', source: { kind: 'preview', url: movie.preview_url } });
+        }
+        if (!items.length && movie.source_url) {
+            items.push({ title: 'Официальная страница', source: { kind: 'page', url: movie.source_url } });
+        }
+        if (!items.length) return notify('Для этого фильма источники не указаны');
+
         Lampa.Select.show({
-            title: movie.title,
+            title: 'Источники — ' + movie.title,
             items: items,
             onSelect: function (item) {
                 Lampa.Controller.toggle(controller);
-                if (item.action === 'preview') playPreview(movie);
-                else if (item.action === 'source') openExternal(movie.source_url);
-                else notify(movie.description || 'Описание отсутствует');
+                if (item.source.kind === 'preview') {
+                    movie.preview_url = item.source.url;
+                    playPreview(movie);
+                } else openExternal(item.source.url);
             },
             onBack: function () { Lampa.Controller.toggle(controller); }
+        });
+    }
+
+    function showDetails(movie) {
+        var controller = Lampa.Controller.enabled().name;
+        var duration = movie.duration ? Math.round(movie.duration / 60) + ' мин.' : 'не указана';
+        var rating = movie.rating ? Number(movie.rating).toFixed(1) : 'нет';
+        var content = $('<div class="adult-catalog-details"></div>');
+        var poster = movie.poster ? '<img src="' + escapeHtml(movie.poster) + '" style="width:12em;max-height:18em;object-fit:cover;border-radius:.4em;margin-right:1.5em" />' : '';
+        var html = '<div style="display:flex;align-items:flex-start">' + poster +
+            '<div style="font-size:1.05em;line-height:1.45">' +
+            '<div><b>Год:</b> ' + escapeHtml(movie.year || 'не указан') + '</div>' +
+            '<div><b>Студия:</b> ' + escapeHtml(movie.studio || 'не указана') + '</div>' +
+            '<div><b>Режиссёр:</b> ' + escapeHtml(joined(movie.directors, 'не указан')) + '</div>' +
+            '<div><b>Продолжительность:</b> ' + escapeHtml(duration) + '</div>' +
+            '<div><b>Рейтинг:</b> ' + escapeHtml(rating) + '</div>' +
+            '<div style="margin-top:.6em"><b>Исполнители:</b> ' + escapeHtml(joined(movie.performers, 'не указаны')) + '</div>' +
+            '<div style="margin-top:.6em"><b>Теги:</b> ' + escapeHtml(joined(movie.tags, 'не указаны')) + '</div>' +
+            '</div></div>' +
+            '<div style="margin-top:1.2em;font-size:1.05em;line-height:1.5"><b>Описание</b><br>' +
+            escapeHtml(movie.description || 'Описание в базе отсутствует.') + '</div>';
+        content.html(html);
+
+        var sourceButton = $('<div class="selector" style="margin-top:1.4em;padding:.8em 1.2em;background:rgba(255,255,255,.15);border-radius:.35em;display:inline-block">Источники</div>');
+        sourceButton.on('hover:enter', function () {
+            Lampa.Modal.close();
+            Lampa.Controller.toggle(controller);
+            showSources(movie);
+        });
+        content.append(sourceButton);
+
+        Lampa.Modal.open({
+            title: movie.title,
+            html: content,
+            size: 'large',
+            onBack: function () {
+                Lampa.Modal.close();
+                Lampa.Controller.toggle(controller);
+            }
+        });
+    }
+
+    function openMovie(movie) {
+        var network = new Lampa.Reguest();
+        Lampa.Loading.start(function () {
+            network.clear();
+            Lampa.Loading.stop();
+        });
+        network.timeout(20000);
+        network.silent(apiUrl('/api/movie', { id: movie.id }), function (response) {
+            Lampa.Loading.stop();
+            try {
+                var data = typeof response === 'string' ? JSON.parse(response) : response;
+                showDetails(prepareMovie(data.result || movie));
+            } catch (e) {
+                showDetails(movie);
+            }
+        }, function () {
+            Lampa.Loading.stop();
+            showDetails(movie);
         });
     }
 
