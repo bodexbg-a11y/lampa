@@ -15,7 +15,7 @@
     }
 
     load(
-        'https://cdn.jsdelivr.net/gh/bodexbg-a11y/lampa/adult-core.js',
-        'https://raw.githack.com/bodexbg-a11y/lampa/main/adult-core.js'
+        'https://lampa-kakm.onrender.com/plugin.js?v=1.3.1',
+        'https://cdn.jsdelivr.net/gh/bodexbg-a11y/lampa@main/adult-core.js?v=1.3.1'
     );
 }());

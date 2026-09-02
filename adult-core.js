@@ -2,13 +2,16 @@
 (function () {
     'use strict';
 
-    var COMPONENT_ID = 'adult_catalog_component';
-    var DETAIL_COMPONENT_ID = 'adult_catalog_detail_component';
+    var VERSION = '1.3.1';
+    var COMPONENT_ID = 'adult_catalog_component_131';
+    var DETAIL_COMPONENT_ID = 'adult_catalog_detail_component_131';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
-    var VERSION = '1.3.0';
+    var initialized = false;
 
-    if (window.plugin_adult_catalog_ready) return;
-    window.plugin_adult_catalog_ready = true;
+    // The old loader set a boolean before the menu was actually registered.
+    // A failed/early load therefore blocked every subsequent update in the same
+    // Lampa session. Only skip a core that has completed this exact version.
+    if (window.plugin_adult_catalog_version === VERSION) return;
 
     function notify(message) {
         if (Lampa.Noty && Lampa.Noty.show) Lampa.Noty.show(message);
@@ -416,16 +419,20 @@
     }
 
     function init() {
+        if (initialized) return;
         if (!window.Lampa || !Lampa.Component || !Lampa.Menu || !Lampa.Maker || !Lampa.Filter) {
             return setTimeout(init, 200);
         }
         if (!Lampa.Manifest || Lampa.Manifest.app_digital < 300) {
             return notify('Плагину «Полное 18+» требуется Lampa 3.0 или новее');
         }
+        initialized = true;
         Lampa.Component.add(COMPONENT_ID, Catalog);
         Lampa.Component.add(DETAIL_COMPONENT_ID, Detail);
         var icon = '<svg viewBox="0 0 24 24" width="34" height="34"><path fill="currentColor" d="M8 5v14l11-7z"/><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
-        Lampa.Menu.addButton(icon, 'Полное 18+', confirmAge);
+        Lampa.Menu.addButton(icon, 'Полное 18+ v' + VERSION, confirmAge);
+        window.plugin_adult_catalog_ready = true;
+        window.plugin_adult_catalog_version = VERSION;
         console.log('Adult Catalog plugin ' + VERSION + ' initialized');
     }
 

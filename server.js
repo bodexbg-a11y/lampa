@@ -281,7 +281,7 @@ const server = http.createServer(async (req, res) => {
         if (url.pathname === '/' || url.pathname === '/health') {
             return json(res, 200, { ok: true, service: 'lampa-adult-catalog', configured: Boolean(TPDB_API_TOKEN) });
         }
-        if (url.pathname === '/plugin.js') return javascript(res);
+        if (url.pathname === '/plugin.js' || url.pathname === '/a18.js') return javascript(res);
         if (url.pathname === '/api/movies') return await movies(url, res);
         if (url.pathname === '/api/movie') return await movie(url, res);
         if (url.pathname === '/api/sources') return await sourceSearch(url, res);
