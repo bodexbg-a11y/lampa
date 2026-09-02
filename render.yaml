@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: lampa-adult-api
+    runtime: node
+    plan: free
+    buildCommand: ""
+    startCommand: node server.js
+    healthCheckPath: /health
+    envVars:
+      - key: TPDB_API_TOKEN
+        sync: false
+      - key: TPDB_API_BASE
+        value: https://api.theporndb.net

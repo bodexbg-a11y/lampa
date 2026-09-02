@@ -1,0 +1,177 @@
+'use strict';
+
+const http = require('node:http');
+const { URL } = require('node:url');
+
+const PORT = Number(process.env.PORT || 3000);
+const TPDB_API_BASE = String(process.env.TPDB_API_BASE || 'https://api.theporndb.net').replace(/\/$/, '');
+const TPDB_API_TOKEN = String(process.env.TPDB_API_TOKEN || '');
+const CACHE_TTL_MS = 5 * 60 * 1000;
+const CACHE_MAX = 200;
+const RATE_LIMIT = 90;
+const cache = new Map();
+const rates = new Map();
+
+function json(res, status, body) {
+    const payload = JSON.stringify(body);
+    res.writeHead(status, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': Buffer.byteLength(payload),
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Cache-Control': status === 200 ? 'public, max-age=120' : 'no-store',
+        'X-Content-Type-Options': 'nosniff'
+    });
+    res.end(payload);
+}
+
+function clientIp(req) {
+    return String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'unknown').split(',')[0].trim();
+}
+
+function allowed(req) {
+    const key = clientIp(req);
+    const now = Date.now();
+    const current = rates.get(key);
+    if (!current || now - current.started > 60000) {
+        rates.set(key, { started: now, count: 1 });
+        return true;
+    }
+    current.count += 1;
+    return current.count <= RATE_LIMIT;
+}
+
+function cleanText(value, max) {
+    return String(value || '').replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, max);
+}
+
+function cleanPage(value) {
+    const page = Number.parseInt(value || '1', 10);
+    return Number.isFinite(page) ? Math.max(1, Math.min(page, 5000)) : 1;
+}
+
+function cleanYear(value) {
+    const year = Number.parseInt(value || '', 10);
+    const maximum = new Date().getUTCFullYear() + 1;
+    return Number.isFinite(year) && year >= 1900 && year <= maximum ? String(year) : '';
+}
+
+function imageUrl(item) {
+    if (typeof item.poster === 'string' && item.poster) return item.poster;
+    if (typeof item.image === 'string' && item.image) return item.image;
+    if (item.background && typeof item.background === 'object') {
+        return item.background.medium || item.background.large || item.background.full || '';
+    }
+    return '';
+}
+
+function backgroundUrl(item) {
+    if (item.background && typeof item.background === 'object') {
+        return item.background.large || item.background.full || item.background.medium || '';
+    }
+    return typeof item.back_image === 'string' ? item.back_image : imageUrl(item);
+}
+
+function mapMovie(item) {
+    const date = cleanText(item.date, 10);
+    return {
+        id: cleanText(item.id || item._id, 100),
+        title: cleanText(item.title, 300) || 'Без названия',
+        date,
+        year: /^\d{4}/.test(date) ? date.slice(0, 4) : '',
+        description: cleanText(item.description, 4000),
+        poster: imageUrl(item),
+        background: backgroundUrl(item),
+        rating: Number(item.rating || 0),
+        duration: Number(item.duration || 0),
+        studio: cleanText(item.site && item.site.name, 200),
+        tags: Array.isArray(item.tags) ? item.tags.slice(0, 50).map((tag) => cleanText(tag.name, 100)).filter(Boolean) : [],
+        performers: Array.isArray(item.performers) ? item.performers.slice(0, 50).map((person) => cleanText(person.name, 150)).filter(Boolean) : [],
+        source_url: /^https?:\/\//i.test(item.url || '') ? item.url : '',
+        preview_url: /^https?:\/\//i.test(item.trailer || '') ? item.trailer : ''
+    };
+}
+
+async function tpdb(path) {
+    if (!TPDB_API_TOKEN) throw new Error('TPDB_API_TOKEN is not configured');
+    const cached = cache.get(path);
+    if (cached && Date.now() - cached.time < CACHE_TTL_MS) return cached.value;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    let response;
+    try {
+        response = await fetch(TPDB_API_BASE + path, {
+            headers: {
+                Authorization: `Bearer ${TPDB_API_TOKEN}`,
+                Accept: 'application/json',
+                'User-Agent': 'LampaAdultCatalog/1.0'
+            },
+            signal: controller.signal
+        });
+    } finally {
+        clearTimeout(timer);
+    }
+
+    if (!response.ok) throw new Error(`ThePornDB returned HTTP ${response.status}`);
+    const value = await response.json();
+    cache.set(path, { time: Date.now(), value });
+    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+    return value;
+}
+
+async function movies(url, res) {
+    const page = cleanPage(url.searchParams.get('page'));
+    const year = cleanYear(url.searchParams.get('year'));
+    const query = cleanText(url.searchParams.get('q'), 120);
+    const mode = cleanText(url.searchParams.get('mode'), 20);
+    const params = new URLSearchParams({ page: String(page), limit: '40' });
+    if (year) params.set('year', year);
+    if (query) params.set('parse', query);
+
+    const upstream = await tpdb(`/movies?${params.toString()}`);
+    let results = (Array.isArray(upstream.data) ? upstream.data : []).map(mapMovie);
+    if (year) results = results.filter((item) => !item.year || item.year === year);
+    if (mode === 'rating') results.sort((a, b) => b.rating - a.rating);
+    if (mode === 'new') results.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+
+    json(res, 200, {
+        results,
+        page: upstream.meta && upstream.meta.current_page || page,
+        total_pages: upstream.meta && upstream.meta.last_page || 1,
+        total: upstream.meta && upstream.meta.total || results.length
+    });
+}
+
+async function movie(url, res) {
+    const id = cleanText(url.searchParams.get('id'), 100);
+    if (!/^[a-zA-Z0-9-]+$/.test(id)) return json(res, 400, { error: 'Invalid id' });
+    const upstream = await tpdb(`/movies/${encodeURIComponent(id)}`);
+    const item = upstream && upstream.data;
+    if (!item) return json(res, 404, { error: 'Not found' });
+    json(res, 200, { result: mapMovie(item) });
+}
+
+const server = http.createServer(async (req, res) => {
+    if (req.method === 'OPTIONS') return json(res, 204, {});
+    if (req.method !== 'GET') return json(res, 405, { error: 'Method not allowed' });
+    if (!allowed(req)) return json(res, 429, { error: 'Too many requests' });
+
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    try {
+        if (url.pathname === '/' || url.pathname === '/health') {
+            return json(res, 200, { ok: true, service: 'lampa-adult-catalog', configured: Boolean(TPDB_API_TOKEN) });
+        }
+        if (url.pathname === '/api/movies') return await movies(url, res);
+        if (url.pathname === '/api/movie') return await movie(url, res);
+        return json(res, 404, { error: 'Not found' });
+    } catch (error) {
+        console.error(error && error.message ? error.message : error);
+        return json(res, 502, { error: 'Metadata source is temporarily unavailable' });
+    }
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`Lampa adult catalog API listening on ${PORT}`);
+});

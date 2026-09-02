@@ -12,5 +12,12 @@
     "link": "https://cdn.jsdelivr.net/gh/bodexbg-a11y/lampa/rus-series.js",
     "descr": "Главная страница сериалов TMDB: сейчас в топе, лучшие по рейтингу, новинки и поиск только по сериалам.",
     "version": "1.0.0"
+  },
+  {
+    "name": "Полное 18+",
+    "author": "Lampa Plugins",
+    "link": "https://raw.githack.com/bodexbg-a11y/lampa/main/adult18.js",
+    "descr": "Отдельный каталог для совершеннолетних: новые фильмы, рейтинг, поиск и фильтр по году.",
+    "version": "1.0.0"
   }
 ]

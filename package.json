@@ -1,0 +1,14 @@
+{
+  "name": "lampa-adult-catalog",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Metadata backend for a private Lampa adult catalog plugin",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check server.js && node --check adult18.js && node --check adult-core.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
