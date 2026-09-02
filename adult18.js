@@ -1,13 +1,21 @@
 (function () {
     'use strict';
 
-    var script = document.createElement('script');
-    script.src = 'https://lampa-kakm.onrender.com/plugin.js?update=' + Date.now();
-    script.async = false;
-    script.onerror = function () {
-        if (window.Lampa && Lampa.Noty && Lampa.Noty.show) {
-            Lampa.Noty.show('Не удалось обновить плагин «Полное 18+»');
-        }
-    };
-    (document.head || document.documentElement).appendChild(script);
+    function load(url, fallback) {
+        var script = document.createElement('script');
+        script.src = url + (url.indexOf('?') >= 0 ? '&' : '?') + 'update=' + Date.now();
+        script.async = false;
+        script.onerror = function () {
+            if (fallback) return load(fallback, '');
+            if (window.Lampa && Lampa.Noty && Lampa.Noty.show) {
+                Lampa.Noty.show('Не удалось загрузить плагин «Полное 18+»');
+            }
+        };
+        (document.head || document.documentElement).appendChild(script);
+    }
+
+    load(
+        'https://cdn.jsdelivr.net/gh/bodexbg-a11y/lampa/adult-core.js',
+        'https://raw.githack.com/bodexbg-a11y/lampa/main/adult-core.js'
+    );
 }());
