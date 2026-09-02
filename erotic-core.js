@@ -4,13 +4,28 @@
 
     var COMPONENT_ID = 'erotic_catalog_v33_component';
     var EROTIC_KEYWORDS = '256466|302868|298666|207767|207807|343572|190370|240530|11190';
-    var KEYWORD_IDS = EROTIC_KEYWORDS.split('|').map(function (id) { return Number(id); });
+    var TAGS = [
+        { id: '', title: 'Вся эротика', keywords: EROTIC_KEYWORDS },
+        { id: 'bdsm', title: 'BDSM', keywords: '158713|6373|157707' },
+        { id: 'fetish', title: 'Фетиш / латекс / шибари', keywords: '158713|206872|226712' },
+        { id: 'massage', title: 'Эротический массаж', keywords: '226161' }
+    ];
+    var COUNTRIES = [
+        { id: '', title: 'Все страны' },
+        { id: 'FR', title: 'Франция' },
+        { id: 'IT', title: 'Италия' },
+        { id: 'ES', title: 'Испания' },
+        { id: 'DE', title: 'Германия' },
+        { id: 'US', title: 'США' },
+        { id: 'JP', title: 'Япония' },
+        { id: 'GB', title: 'Великобритания' }
+    ];
     var CURATED_DIRECTORS = [{
         id: 30956,
         title: 'Хесус Франко',
         aliases: ['хесус франко', 'джесс франко', 'jesus franco', 'jesús franco', 'jess franco']
     }];
-    var VERSION = '3.4.0';
+    var VERSION = '3.5.0';
 
     if (window.plugin_erotic_catalog_v33_ready) return;
     window.plugin_erotic_catalog_v33_ready = true;
@@ -25,16 +40,32 @@
         return typeof value === 'string' ? value : 'ru';
     }
 
-    function discoverUrl(object, sort, votes) {
+    function findOption(items, id) {
+        var found = items[0];
+        items.some(function (item) {
+            if (item.id === (id || '')) found = item;
+            return item.id === (id || '');
+        });
+        return found;
+    }
+
+    function selectedTag(object) {
+        return findOption(TAGS, object.filter_tag || '');
+    }
+
+    function discoverUrl(object, sort, votes, page) {
         var year = object.filter_year || '';
         var yearParam = year ? '&primary_release_year=' + encodeURIComponent(year) : '';
+        var countryParam = object.filter_country ?
+            '&with_origin_country=' + encodeURIComponent(object.filter_country) : '';
+        var tag = selectedTag(object);
         var dateParam = sort === 'primary_release_date.desc' ?
             '&primary_release_date.lte=' + new Date().toISOString().slice(0, 10) : '';
         var path = 'discover/movie?api_key=' + Lampa.TMDB.key() +
-            '&with_keywords=' + encodeURIComponent(EROTIC_KEYWORDS) +
+            '&with_keywords=' + encodeURIComponent(tag.keywords) +
             '&include_adult=true&sort_by=' + encodeURIComponent(sort) +
-            '&vote_count.gte=' + (votes || 0) + '&page=1' +
-            '&language=' + encodeURIComponent(language()) + yearParam + dateParam;
+            '&vote_count.gte=' + (votes || 0) + '&page=' + (page || 1) +
+            '&language=' + encodeURIComponent(language()) + yearParam + countryParam + dateParam;
         return Lampa.TMDB.api(path);
     }
 
@@ -46,8 +77,10 @@
             '&include_adult=true&page=1&language=' + encodeURIComponent(language()) + yearParam);
     }
 
-    function keywordsUrl(id) {
-        return Lampa.TMDB.api('movie/' + id + '/keywords?api_key=' + Lampa.TMDB.key());
+    function detailsUrl(id) {
+        return Lampa.TMDB.api('movie/' + id + '?api_key=' + Lampa.TMDB.key() +
+            '&append_to_response=keywords,alternative_titles,external_ids' +
+            '&language=' + encodeURIComponent(language()));
     }
 
     function directorCreditsUrl(id) {
@@ -78,7 +111,7 @@
         });
     }
 
-    function openCatalog(search, year) {
+    function openCatalog(search, year, country, tag) {
         var title = 'Эротическое кино 18+';
         if (search) title += ' — ' + search;
         if (year) title += ' (' + year + ')';
@@ -89,6 +122,8 @@
             component: COMPONENT_ID,
             search_query: search || '',
             filter_year: year || '',
+            filter_country: country || '',
+            filter_tag: tag || '',
             page: 1,
             source: 'tmdb'
         });
@@ -103,7 +138,8 @@
             nosave: true
         }, function (value) {
             Lampa.Controller.toggle(controller);
-            openCatalog((value || '').trim(), object.filter_year || '');
+            openCatalog((value || '').trim(), object.filter_year || '',
+                object.filter_country || '', object.filter_tag || '');
         });
     }
 
@@ -126,7 +162,57 @@
             items: items,
             onSelect: function (item) {
                 Lampa.Controller.toggle(controller);
-                openCatalog(object.search_query || '', item.year);
+                openCatalog(object.search_query || '', item.year,
+                    object.filter_country || '', object.filter_tag || '');
+            },
+            onBack: function () { Lampa.Controller.toggle(controller); }
+        });
+    }
+
+    function askCountry(object) {
+        var controller = Lampa.Controller.enabled().name;
+        var items = COUNTRIES.map(function (country) {
+            return {
+                title: country.title,
+                id: country.id,
+                selected: (object.filter_country || '') === country.id
+            };
+        });
+
+        Lampa.Select.show({
+            title: 'Выберите страну',
+            items: items,
+            onSelect: function (item) {
+                Lampa.Controller.toggle(controller);
+                openCatalog(object.search_query || '', object.filter_year || '',
+                    item.id, object.filter_tag || '');
+            },
+            onBack: function () { Lampa.Controller.toggle(controller); }
+        });
+    }
+
+    function askTag(object) {
+        var controller = Lampa.Controller.enabled().name;
+        var items = [{
+            title: 'Выбрать год…' + (object.filter_year ? '  (' + object.filter_year + ')' : ''),
+            id: '__year__',
+            selected: false
+        }].concat(TAGS.map(function (tag) {
+            return {
+                title: tag.title,
+                id: tag.id,
+                selected: (object.filter_tag || '') === tag.id
+            };
+        }));
+
+        Lampa.Select.show({
+            title: 'Год и тематический тег',
+            items: items,
+            onSelect: function (item) {
+                Lampa.Controller.toggle(controller);
+                if (item.id === '__year__') return setTimeout(function () { askYear(object); }, 100);
+                openCatalog(object.search_query || '', object.filter_year || '',
+                    object.filter_country || '', item.id);
             },
             onBack: function () { Lampa.Controller.toggle(controller); }
         });
@@ -145,21 +231,26 @@
         });
         var render = filter.render();
         var searchButton = render.find('.filter--search');
-        var yearButton = render.find('.filter--filter');
-        var sortButton = render.find('.filter--sort');
-
-        sortButton.removeClass('selector').addClass('hide');
+        var tagButton = render.find('.filter--filter');
+        var countryButton = render.find('.filter--sort');
 
         searchButton.off('hover:enter').on('hover:enter', function () {
             askSearch(object);
         });
         searchButton.find('div').text(object.search_query || 'Поиск').removeClass('hide');
 
-        yearButton.off('hover:enter').on('hover:enter', function () {
-            askYear(object);
+        countryButton.off('hover:enter').on('hover:enter', function () {
+            askCountry(object);
         });
-        yearButton.find('span').text('Год');
-        yearButton.find('div').text(object.filter_year || 'Все').removeClass('hide');
+        countryButton.find('span').text('Страна');
+        countryButton.find('div').text(findOption(COUNTRIES, object.filter_country).title).removeClass('hide');
+
+        tagButton.off('hover:enter').on('hover:enter', function () {
+            askTag(object);
+        });
+        tagButton.find('span').text('Тег / год');
+        tagButton.find('div').text(selectedTag(object).title +
+            (object.filter_year ? ' • ' + object.filter_year : '')).removeClass('hide');
 
         return filter;
     }
@@ -173,6 +264,31 @@
 
     function parseJson(response) {
         return (typeof response === 'string' ? JSON.parse(response) : response) || {};
+    }
+
+    function enrichMovie(movie, details) {
+        movie.original_title = details.original_title || movie.original_title;
+        movie.imdb_id = details.imdb_id ||
+            (details.external_ids && details.external_ids.imdb_id) || movie.imdb_id;
+        movie.external_ids = details.external_ids || movie.external_ids || {};
+        movie.alternative_titles = details.alternative_titles || movie.alternative_titles || { titles: [] };
+        movie.production_countries = details.production_countries || movie.production_countries || [];
+        return prepareMovie(movie);
+    }
+
+    function matchesDetails(movie, details, object, curated) {
+        var keywordIds = selectedTag(object).keywords.split('|').map(function (id) { return Number(id); });
+        var detailIds = ((details.keywords && details.keywords.keywords) || []).map(function (keyword) {
+            return keyword.id;
+        });
+        var tagMatched = (!object.filter_tag && curated) || detailIds.some(function (id) {
+            return keywordIds.indexOf(id) >= 0;
+        });
+        var countryMatched = !object.filter_country || (details.production_countries || []).some(function (country) {
+            return country.iso_3166_1 === object.filter_country;
+        });
+
+        return tagMatched && countryMatched;
     }
 
     function directorMovies(response, object) {
@@ -262,11 +378,12 @@
 
         function loadHome(complete, error) {
             var configs = [
-                { title: 'Сейчас популярно', sort: 'popularity.desc', votes: 10 },
-                { title: 'Лучшее по рейтингу', sort: 'vote_average.desc', votes: 20 },
-                { title: 'Новинки', sort: 'primary_release_date.desc', votes: 0 }
+                { title: 'Сейчас популярно', sort: 'popularity.desc', votes: 10, pages: 3 },
+                { title: 'Лучшее по рейтингу', sort: 'vote_average.desc', votes: 20, pages: 3 },
+                { title: 'Новинки', sort: 'primary_release_date.desc', votes: 0, pages: 3 }
             ];
-            var rows = new Array(configs.length + CURATED_DIRECTORS.length);
+            var visibleDirectors = (object.filter_country || object.filter_tag) ? [] : CURATED_DIRECTORS;
+            var rows = new Array(configs.length + visibleDirectors.length);
             var pending = rows.length;
             var successes = 0;
 
@@ -280,7 +397,7 @@
             }
 
             configs.forEach(function (config, index) {
-                request(discoverUrl(object, config.sort, config.votes), function (data) {
+                requestPages(config, function (data) {
                     successes++;
                     rows[index] = {
                         title: config.title,
@@ -292,7 +409,7 @@
                 }, finish);
             });
 
-            CURATED_DIRECTORS.forEach(function (director, directorIndex) {
+            visibleDirectors.forEach(function (director, directorIndex) {
                 request(directorCreditsUrl(director.id), function (movies) {
                     successes++;
                     rows[configs.length + directorIndex] = {
@@ -306,6 +423,41 @@
                     return directorMovies(response, object);
                 });
             });
+        }
+
+        function requestPages(config, complete, error) {
+            var pages = config.pages || 1;
+            var results = new Array(pages);
+            var pending = pages;
+            var loaded = 0;
+
+            for (var page = 1; page <= pages; page++) {
+                (function (pageNumber) {
+                    request(discoverUrl(object, config.sort, config.votes, pageNumber), function (data) {
+                        results[pageNumber - 1] = data.results || [];
+                        loaded++;
+                        finish();
+                    }, finish);
+                }(page));
+            }
+
+            function finish() {
+                pending--;
+                if (pending) return;
+                if (!loaded) return error();
+
+                var seen = {};
+                var combined = [];
+                results.forEach(function (items) {
+                    (items || []).forEach(function (item) {
+                        if (!seen[item.id]) {
+                            seen[item.id] = true;
+                            combined.push(item);
+                        }
+                    });
+                });
+                complete({ results: combined });
+            }
         }
 
         function loadSearch(complete, error) {
@@ -335,25 +487,19 @@
                     var pending = movies.length;
 
                     movies.forEach(function (movie) {
-                        if (curatedIds[movie.id]) {
-                            matched.push(movie);
-                            pending--;
-                            if (!pending) finish();
-                            return;
-                        }
-
-                        network.silent(keywordsUrl(movie.id), function (response) {
-                            var keywordData;
+                        network.silent(detailsUrl(movie.id), function (response) {
+                            var details;
                             try {
-                                keywordData = typeof response === 'string' ? JSON.parse(response) : response;
+                                details = typeof response === 'string' ? JSON.parse(response) : response;
                             } catch (e) {
-                                keywordData = {};
+                                details = {};
                             }
-                            var ids = (keywordData.keywords || []).map(function (keyword) { return keyword.id; });
-                            if (ids.some(function (id) { return KEYWORD_IDS.indexOf(id) >= 0; })) matched.push(movie);
+                            enrichMovie(movie, details || {});
+                            if (matchesDetails(movie, details || {}, object, curatedIds[movie.id])) matched.push(movie);
                             pending--;
                             if (!pending) finish();
                         }, function () {
+                            if (!object.filter_country && !object.filter_tag && curatedIds[movie.id]) matched.push(movie);
                             pending--;
                             if (!pending) finish();
                         });
@@ -435,7 +581,7 @@
 
         var icon = '<svg viewBox="0 0 24 24" width="34" height="34"><path fill="currentColor" d="M8 5v14l11-7z"/><path fill="currentColor" opacity=".4" d="M3 3h18v18H3z"/></svg>';
         Lampa.Menu.addButton(icon, 'Эротика 18+', function () {
-            openCatalog('', '');
+            openCatalog('', '', '', '');
         });
 
         console.log('Erotic Catalog plugin ' + VERSION + ' initialized directly');
