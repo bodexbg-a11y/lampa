@@ -2,9 +2,9 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.5.1';
-    var COMPONENT_ID = 'adult_catalog_component_151';
-    var EMBED_COMPONENT_ID = 'adult_embed_player_component_151';
+    var VERSION = '1.5.2';
+    var COMPONENT_ID = 'adult_catalog_component_152';
+    var EMBED_COMPONENT_ID = 'adult_embed_player_component_152';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
@@ -220,7 +220,9 @@
             background_image: movie.background_image,
             tagline: movie.studio ? 'Студия: ' + movie.studio : '',
             production_countries: [],
+            production_companies: movie.studio ? [{ id: 0, name: movie.studio }] : [],
             origin_country: [],
+            spoken_languages: [],
             genres: (movie.tags || []).slice(0, 8).map(function (name, index) {
                 return { id: index + 1, name: name };
             }),
@@ -251,16 +253,19 @@
                 var network = new Lampa.Reguest();
                 network.timeout(20000);
                 network.silent(apiUrl('/api/movie', { id: params.id }), function (response) {
+                    var movie;
                     try {
                         var data = typeof response === 'string' ? JSON.parse(response) : response;
-                        var movie = prepareMovie(data.result || {});
-                        if (!movie.id) return error();
-                        detailCache[movie.id] = movie;
-                        complete(fullData(movie));
-                    } catch (e) { error(); }
-                }, error);
+                        movie = prepareMovie(data.result || {});
+                    } catch (e) {
+                        return error({ blocked: false });
+                    }
+                    if (!movie.id) return error({ blocked: false });
+                    detailCache[movie.id] = movie;
+                    complete(fullData(movie));
+                }, function () { error({ blocked: false }); });
             },
-            person: function (params, complete, error) { error(); },
+            person: function (params, complete, error) { error({ blocked: false }); },
             clear: function () {}
         };
     }
