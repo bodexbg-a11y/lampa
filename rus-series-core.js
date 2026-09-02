@@ -3,7 +3,7 @@
     'use strict';
 
     var COMPONENT_ID = 'rus_series_v2_component';
-    var VERSION = '2.1.0';
+    var VERSION = '2.2.0';
 
     if (window.plugin_rus_series_v2_ready) return;
     window.plugin_rus_series_v2_ready = true;
@@ -23,22 +23,24 @@
             'api_key=' + Lampa.TMDB.key() + '&language=' + encodeURIComponent(language()));
     }
 
-    function popularRussianUrl() {
-        return api('discover/tv?include_adult=false&page=1&sort_by=popularity.desc' +
-            '&with_origin_country=RU&with_original_language=ru');
+    function popularRussianUrl(page) {
+        return api('discover/tv?include_adult=false&page=' + (page || 1) + '&sort_by=popularity.desc' +
+            '&with_origin_country=RU&with_original_language=ru' +
+            '&without_genres=10763%2C10764%2C10767');
     }
 
-    function newTntSeriesUrl() {
-        return api('discover/tv?include_adult=false&page=1&sort_by=first_air_date.desc' +
+    function newTntSeriesUrl(page) {
+        return api('discover/tv?include_adult=false&page=' + (page || 1) + '&sort_by=first_air_date.desc' +
             '&with_networks=1191&with_origin_country=RU&with_original_language=ru' +
             '&without_genres=10763%2C10764%2C10767' +
             '&first_air_date.lte=' + new Date().toISOString().slice(0, 10));
     }
 
-    function discoverUrl(sort, votes, newest) {
+    function discoverUrl(sort, votes, newest, page) {
         var date = newest ? '&first_air_date.lte=' + new Date().toISOString().slice(0, 10) : '';
-        return api('discover/tv?include_adult=false&page=1&sort_by=' + encodeURIComponent(sort) +
+        return api('discover/tv?include_adult=false&page=' + (page || 1) + '&sort_by=' + encodeURIComponent(sort) +
             '&with_origin_country=RU&with_original_language=ru' +
+            '&without_genres=10763%2C10764%2C10767' +
             '&vote_count.gte=' + (votes || 0) + date);
     }
 
@@ -175,16 +177,32 @@
 
         function loadHome(complete, error) {
             var configs = [
-                { title: 'Новые российские сериалы', url: discoverUrl('first_air_date.desc', 10, true) },
-                { title: 'Новые сериалы на ТНТ', url: newTntSeriesUrl() },
-                { title: 'Лучшие российские сериалы', url: discoverUrl('vote_average.desc', 300, false) },
-                { title: 'Сейчас смотрят', url: popularRussianUrl() }
+                {
+                    title: 'Новые российские сериалы',
+                    pages: 3,
+                    url: function (page) { return discoverUrl('first_air_date.desc', 0, true, page); }
+                },
+                {
+                    title: 'Новые сериалы на ТНТ',
+                    pages: 3,
+                    url: function (page) { return newTntSeriesUrl(page); }
+                },
+                {
+                    title: 'Лучшие российские сериалы',
+                    pages: 1,
+                    url: function (page) { return discoverUrl('vote_average.desc', 300, false, page); }
+                },
+                {
+                    title: 'Сейчас смотрят',
+                    pages: 1,
+                    url: function (page) { return popularRussianUrl(page); }
+                }
             ];
             var rows = new Array(configs.length);
             var pending = configs.length;
 
             configs.forEach(function (config, index) {
-                request(config.url, function (data) {
+                requestPages(config, function (data) {
                     rows[index] = {
                         title: config.title,
                         results: data.results,
@@ -202,6 +220,41 @@
                     if (rows.length) complete(rows);
                     else error('В каталоге пока нет сериалов');
                 }
+            }
+        }
+
+        function requestPages(config, complete, error) {
+            var pages = config.pages || 1;
+            var results = new Array(pages);
+            var pending = pages;
+            var loaded = 0;
+
+            for (var page = 1; page <= pages; page++) {
+                (function (pageNumber) {
+                    request(config.url(pageNumber), function (data) {
+                        results[pageNumber - 1] = data.results || [];
+                        loaded++;
+                        finish();
+                    }, finish);
+                }(page));
+            }
+
+            function finish() {
+                pending--;
+                if (pending) return;
+                if (!loaded) return error();
+
+                var seen = {};
+                var combined = [];
+                results.forEach(function (items) {
+                    (items || []).forEach(function (item) {
+                        if (!seen[item.id]) {
+                            seen[item.id] = true;
+                            combined.push(item);
+                        }
+                    });
+                });
+                complete({ results: combined });
             }
         }
 
