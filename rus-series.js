@@ -1,11 +1,11 @@
 (function () {
     'use strict';
 
-    var COMPONENT_ID = 'rus_series_v1_component';
-    var VERSION = '1.1.0';
+    var COMPONENT_ID = 'rus_series_v2_component';
+    var VERSION = '2.0.0';
 
-    if (window.plugin_rus_series_v1_ready) return;
-    window.plugin_rus_series_v1_ready = true;
+    if (window.plugin_rus_series_v2_ready) return;
+    window.plugin_rus_series_v2_ready = true;
 
     function notify(message) {
         if (Lampa.Noty && Lampa.Noty.show) Lampa.Noty.show(message);
@@ -40,7 +40,7 @@
 
     function isRussianSeries(item) {
         var countries = item.origin_country || [];
-        return countries.indexOf('RU') >= 0;
+        return countries[0] === 'RU' && item.original_language === 'ru';
     }
 
     function prepareSeries(item) {
@@ -75,7 +75,7 @@
 
     function openCatalog(search) {
         Lampa.Activity.push({
-            url: 'rus-series',
+            url: 'rus-series-v2',
             title: search ? 'Русь сериалы — ' + search : 'Русь сериалы',
             component: COMPONENT_ID,
             search_query: search || '',
