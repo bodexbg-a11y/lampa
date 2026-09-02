@@ -2,8 +2,9 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.4.0';
-    var COMPONENT_ID = 'adult_catalog_component_140';
+    var VERSION = '1.5.0';
+    var COMPONENT_ID = 'adult_catalog_component_150';
+    var EMBED_COMPONENT_ID = 'adult_embed_player_component_150';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
@@ -71,23 +72,58 @@
     }
 
     function playEmbed(source, movie) {
-        if (!/^https:\/\/www\.pornhub\.com\/embed\/[a-zA-Z0-9]+$/i.test(source.embed_url || '')) {
+        var url = String(source.embed_url || '');
+        var allowed = [
+            /^https:\/\/www\.pornhub\.com\/embed\/[a-zA-Z0-9]+$/i,
+            /^https:\/\/www\.xvideos\.com\/embedframe\/[a-zA-Z0-9.]+$/i,
+            /^https:\/\/xhamster\.com\/embed\/[0-9]+$/i
+        ];
+        if (!allowed.some(function (pattern) { return pattern.test(url); })) {
             return notify('Некорректная ссылка встроенного плеера');
         }
-        var controller = Lampa.Controller.enabled().name;
-        var frame = $('<iframe allow="autoplay; fullscreen; picture-in-picture" allowfullscreen frameborder="0"></iframe>');
-        frame.attr('src', source.embed_url);
-        frame.css({ width: '100%', height: '70vh', background: '#000', border: '0' });
-        Lampa.Modal.open({
+        Lampa.Activity.push({
+            url: 'adult-player/' + source.provider + '/' + source.id,
             title: source.provider + ' — ' + (source.title || movie.title),
-            html: frame,
-            size: 'large',
-            onBack: function () {
-                frame.attr('src', 'about:blank');
-                Lampa.Modal.close();
-                Lampa.Controller.toggle(controller);
-            }
+            component: EMBED_COMPONENT_ID,
+            embed_url: url,
+            provider: source.provider,
+            movie: movie
         });
+    }
+
+    function EmbedPlayer(object) {
+        var html = $('<div class="adult-embed-player" style="position:fixed;inset:0;z-index:9999;background:#000"></div>');
+        var frame = $('<iframe allow="autoplay; fullscreen; picture-in-picture; encrypted-media" allowfullscreen frameborder="0" tabindex="0"></iframe>');
+        var close = $('<div class="selector" style="position:absolute;left:1.4em;top:1.2em;padding:.55em .85em;border-radius:.35em;background:rgba(0,0,0,.72);color:#fff;font-size:1.05em">← Назад</div>');
+        frame.attr('src', object.embed_url);
+        frame.css({ width: '100%', height: '100%', background: '#000', border: '0', display: 'block' });
+        close.on('hover:enter', function () { Lampa.Activity.backward(); });
+        html.append(frame).append(close);
+
+        this.create = function () { return this.render(); };
+        this.render = function () { return html; };
+        this.start = function () {
+            var component = this;
+            Lampa.Controller.add('adult_embed_player', {
+                link: component,
+                toggle: function () {
+                    Lampa.Controller.collectionSet(html[0]);
+                    Lampa.Controller.collectionFocus(close[0], html[0]);
+                },
+                right: function () { frame[0].focus(); },
+                left: function () { Lampa.Controller.collectionFocus(close[0], html[0]); },
+                back: function () { Lampa.Activity.backward(); }
+            });
+            Lampa.Controller.toggle('adult_embed_player');
+            setTimeout(function () { close.css('opacity', '.25'); }, 2500);
+            close.on('hover:focus', function () { close.css('opacity', '1'); });
+        };
+        this.pause = function () {};
+        this.stop = function () {};
+        this.destroy = function () {
+            frame.attr('src', 'about:blank');
+            html.remove();
+        };
     }
 
     function showSources(movie) {
@@ -113,7 +149,8 @@
             (data.results || []).forEach(function (source) {
                 items.push({
                     title: source.provider + ' • ' + source.title +
-                        (source.duration ? ' • ' + source.duration : ''),
+                        (source.duration ? ' • ' + source.duration : '') +
+                        (source.availability === 'limited' ? ' • может быть недоступен' : ''),
                     source: source
                 });
             });
@@ -476,6 +513,7 @@
         registerAdultSource();
         registerFullScreenButton();
         Lampa.Component.add(COMPONENT_ID, Catalog);
+        Lampa.Component.add(EMBED_COMPONENT_ID, EmbedPlayer);
         var icon = '<svg viewBox="0 0 24 24" width="34" height="34"><path fill="currentColor" d="M8 5v14l11-7z"/><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
         Lampa.Menu.addButton(icon, 'Полное 18+ v' + VERSION, confirmAge);
         window.plugin_adult_catalog_ready = true;

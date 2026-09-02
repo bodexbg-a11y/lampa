@@ -100,6 +100,18 @@ function matchScore(title, query) {
     return Math.round(matched / words.length * 500);
 }
 
+function relevantTitle(title, query) {
+    const candidate = normalized(title);
+    const wanted = normalized(query);
+    if (!candidate || !wanted) return false;
+    if (candidate.includes(wanted) || wanted.includes(candidate)) return true;
+    const words = wanted.split(' ').filter((word) => word.length > 2);
+    if (!words.length) return false;
+    const matched = words.filter((word) => candidate.includes(word)).length;
+    if (words.length <= 2) return matched === words.length;
+    return matched >= 2 && matched / words.length >= 0.4;
+}
+
 function imageUrl(item) {
     if (typeof item.poster === 'string' && item.poster) return item.poster;
     if (typeof item.image === 'string' && item.image) return item.image;
@@ -216,35 +228,47 @@ async function movie(url, res) {
     json(res, 200, { result: mapMovie(item) });
 }
 
-async function sourceSearch(url, res) {
-    const query = cleanText(url.searchParams.get('q'), 160);
-    const year = cleanYear(url.searchParams.get('year'));
-    if (query.length < 2) return json(res, 400, { error: 'Search query is too short' });
+function decodeHtml(value) {
+    const named = { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>', nbsp: ' ' };
+    return String(value || '').replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (entity, code) => {
+        if (code[0] === '#') {
+            const hex = code[1].toLowerCase() === 'x';
+            const point = Number.parseInt(code.slice(hex ? 2 : 1), hex ? 16 : 10);
+            return Number.isFinite(point) ? String.fromCodePoint(point) : entity;
+        }
+        return named[code.toLowerCase()] || entity;
+    });
+}
 
-    const cacheKey = `pornhub:${query}:${year}`;
-    const cached = cache.get(cacheKey);
-    if (cached && Date.now() - cached.time < CACHE_TTL_MS) return json(res, 200, cached.value);
-
-    const target = new URL('https://www.pornhub.com/webmasters/search');
-    target.searchParams.set('search', query);
-    target.searchParams.set('page', '1');
-    target.searchParams.set('thumbsize', 'small');
-
+async function fetchPage(target, accept = 'text/html') {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
     let response;
     try {
         response = await fetch(target, {
-            headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0 LampaAdultCatalog/1.2' },
+            headers: {
+                Accept: accept,
+                'Accept-Language': 'en-US,en;q=0.8',
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36'
+            },
+            redirect: 'follow',
             signal: controller.signal
         });
     } finally {
         clearTimeout(timer);
     }
-    if (!response.ok) throw new Error(`Pornhub Webmaster API returned HTTP ${response.status}`);
+    if (!response.ok) throw new Error(`${target.hostname} returned HTTP ${response.status}`);
+    return response;
+}
 
+async function searchPornhub(query, year) {
+    const target = new URL('https://www.pornhub.com/webmasters/search');
+    target.searchParams.set('search', query);
+    target.searchParams.set('page', '1');
+    target.searchParams.set('thumbsize', 'small');
+    const response = await fetchPage(target, 'application/json');
     const upstream = await response.json();
-    const results = (Array.isArray(upstream.videos) ? upstream.videos : []).map((item) => {
+    return (Array.isArray(upstream.videos) ? upstream.videos : []).map((item) => {
         const id = cleanText(item.video_id, 100);
         const published = cleanText(item.publish_date, 30);
         let score = matchScore(item.title, query);
@@ -261,11 +285,106 @@ async function sourceSearch(url, res) {
             published,
             score
         };
-    }).filter((item) => item.embed_url && item.score > 0)
+    }).filter((item) => item.embed_url && relevantTitle(item.title, query))
         .sort((a, b) => b.score - a.score || b.rating - a.rating)
-        .slice(0, 15);
+        .slice(0, 10);
+}
 
-    const payload = { results };
+async function searchXvideos(query, year) {
+    const target = new URL('https://www.xvideos.com/');
+    target.searchParams.set('k', query);
+    target.searchParams.set('p', '0');
+    const response = await fetchPage(target);
+    const html = (await response.text()).slice(0, 1500000);
+    const results = [];
+    const seen = new Set();
+    const pattern = /<div\s+id="video_([a-z0-9]+)"[\s\S]*?<p\s+class="title"><a[^>]+title="([^"]+)"[\s\S]*?<span\s+class="duration">([^<]*)<\/span>/gi;
+    let match;
+    while ((match = pattern.exec(html)) && results.length < 10) {
+        const id = cleanText(match[1], 100);
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        const title = cleanText(decodeHtml(match[2]), 300);
+        const thumbMatch = match[0].match(/data-src="(https?:\/\/[^"]+)"/i);
+        let score = matchScore(title, query);
+        if (year && title.includes(year)) score += 40;
+        if (!relevantTitle(title, query)) continue;
+        results.push({
+            id,
+            title,
+            provider: 'XVideos',
+            kind: 'embed',
+            embed_url: `https://www.xvideos.com/embedframe/${id}`,
+            thumbnail: thumbMatch ? decodeHtml(thumbMatch[1]) : '',
+            duration: cleanText(match[3], 30),
+            rating: 0,
+            published: '',
+            score
+        });
+    }
+    return results;
+}
+
+async function searchXhamster(query, year) {
+    const target = new URL(`https://xhamster.com/search/${encodeURIComponent(query).replace(/%20/g, '+')}`);
+    target.searchParams.set('page', '1');
+    const response = await fetchPage(target);
+    const html = (await response.text()).slice(0, 2000000);
+    const results = [];
+    const seen = new Set();
+    const pattern = /data-video-id="([0-9]+)"[\s\S]{0,3000}?href="https:\/\/xhamster\.com\/videos\/([^"]+)"[\s\S]{0,1200}?aria-label="([^"]+)"/gi;
+    let match;
+    while ((match = pattern.exec(html)) && results.length < 10) {
+        const id = cleanText(match[1], 40);
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        const title = cleanText(decodeHtml(match[3]), 300);
+        let score = matchScore(title, query);
+        if (year && title.includes(year)) score += 40;
+        if (!relevantTitle(title, query)) continue;
+        results.push({
+            id,
+            title,
+            provider: 'xHamster',
+            kind: 'embed',
+            embed_url: `https://xhamster.com/embed/${id}`,
+            thumbnail: '',
+            duration: '',
+            rating: 0,
+            published: '',
+            availability: 'limited',
+            score
+        });
+    }
+    return results;
+}
+
+async function sourceSearch(url, res) {
+    const query = cleanText(url.searchParams.get('q'), 160);
+    const year = cleanYear(url.searchParams.get('year'));
+    if (query.length < 2) return json(res, 400, { error: 'Search query is too short' });
+
+    const cacheKey = `sources:v3:${query}:${year}`;
+    const cached = cache.get(cacheKey);
+    if (cached && Date.now() - cached.time < CACHE_TTL_MS) return json(res, 200, cached.value);
+
+    const providers = [
+        ['Pornhub', searchPornhub],
+        ['XVideos', searchXvideos],
+        ['xHamster', searchXhamster]
+    ];
+    const settled = await Promise.allSettled(providers.map((provider) => provider[1](query, year)));
+    const availability = {};
+    let results = [];
+    settled.forEach((result, index) => {
+        const name = providers[index][0];
+        availability[name] = result.status === 'fulfilled';
+        if (result.status === 'fulfilled') results = results.concat(result.value);
+        else console.warn(`${name} source search failed: ${result.reason && result.reason.message || result.reason}`);
+    });
+    results.sort((a, b) => b.score - a.score || b.rating - a.rating || a.provider.localeCompare(b.provider));
+
+    const payload = { results: results.slice(0, 30), providers: availability };
     cache.set(cacheKey, { time: Date.now(), value: payload });
     if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
     return json(res, 200, payload);
