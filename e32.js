@@ -4,7 +4,12 @@
     var COMPONENT_ID = 'erotic_catalog_v33_component';
     var EROTIC_KEYWORDS = '256466|302868|298666|207767|207807|343572|190370|240530|11190';
     var KEYWORD_IDS = EROTIC_KEYWORDS.split('|').map(function (id) { return Number(id); });
-    var VERSION = '3.3.0';
+    var CURATED_DIRECTORS = [{
+        id: 30956,
+        title: 'Хесус Франко',
+        aliases: ['хесус франко', 'джесс франко', 'jesus franco', 'jesús franco', 'jess franco']
+    }];
+    var VERSION = '3.4.0';
 
     if (window.plugin_erotic_catalog_v33_ready) return;
     window.plugin_erotic_catalog_v33_ready = true;
@@ -42,6 +47,11 @@
 
     function keywordsUrl(id) {
         return Lampa.TMDB.api('movie/' + id + '/keywords?api_key=' + Lampa.TMDB.key());
+    }
+
+    function directorCreditsUrl(id) {
+        return Lampa.TMDB.api('person/' + id + '/movie_credits?api_key=' + Lampa.TMDB.key() +
+            '&language=' + encodeURIComponent(language()));
     }
 
     function prepareMovie(movie) {
@@ -102,7 +112,7 @@
         var items = [{ title: 'Все годы', year: '', selected: !object.filter_year }];
         var year;
 
-        for (year = current; year >= 1960; year--) {
+        for (year = current; year >= 1930; year--) {
             items.push({
                 title: String(year),
                 year: String(year),
@@ -160,6 +170,44 @@
         return data;
     }
 
+    function parseJson(response) {
+        return (typeof response === 'string' ? JSON.parse(response) : response) || {};
+    }
+
+    function directorMovies(response, object) {
+        var data = parseJson(response);
+        var year = String(object.filter_year || '');
+        var seen = {};
+
+        return (data.crew || []).filter(function (movie) {
+            var releaseYear = String(movie.release_date || '').slice(0, 4);
+            if (movie.job !== 'Director' || !movie.id || seen[movie.id]) return false;
+            if (year && releaseYear !== year) return false;
+            seen[movie.id] = true;
+            return true;
+        }).map(prepareMovie).sort(function (a, b) {
+            return (b.popularity || 0) - (a.popularity || 0);
+        });
+    }
+
+    function normalizedQuery(value) {
+        return String(value || '').toLowerCase().replace(/ё/g, 'е').trim();
+    }
+
+    function requestedDirector(query) {
+        var value = normalizedQuery(query);
+        var found = null;
+
+        CURATED_DIRECTORS.some(function (director) {
+            found = director.aliases.some(function (alias) {
+                return normalizedQuery(alias) === value;
+            }) ? director : null;
+            return !!found;
+        });
+
+        return found;
+    }
+
     function ToolbarLine(filter, parent) {
         var render = filter.render();
         var last;
@@ -196,12 +244,12 @@
         var toolbar;
         var comp = Lampa.Maker.make('Main', object);
 
-        function request(url, complete, error) {
+        function request(url, complete, error, parser) {
             network.timeout(20000);
             network.silent(url, function (response) {
                 var data;
                 try {
-                    data = parseResponse(response);
+                    data = (parser || parseResponse)(response);
                 } catch (parseError) {
                     return error('TMDB вернул некорректный ответ');
                 }
@@ -217,9 +265,18 @@
                 { title: 'Лучшее по рейтингу', sort: 'vote_average.desc', votes: 20 },
                 { title: 'Новинки', sort: 'primary_release_date.desc', votes: 0 }
             ];
-            var rows = new Array(configs.length);
-            var pending = configs.length;
+            var rows = new Array(configs.length + CURATED_DIRECTORS.length);
+            var pending = rows.length;
             var successes = 0;
+
+            function finish() {
+                pending--;
+                if (!pending) {
+                    rows = rows.filter(function (row) { return row && row.results.length; });
+                    if (rows.length) complete(rows);
+                    else error(successes ? 'В каталоге пока нет фильмов' : 'Не удалось загрузить подборки TMDB');
+                }
+            }
 
             configs.forEach(function (config, index) {
                 request(discoverUrl(object, config.sort, config.votes), function (data) {
@@ -230,60 +287,110 @@
                         total_pages: 1,
                         params: {}
                     };
-                    pending--;
-                    if (!pending) {
-                        rows = rows.filter(function (row) { return row && row.results.length; });
-                        if (rows.length) complete(rows);
-                        else error('В каталоге пока нет фильмов');
-                    }
-                }, function () {
-                    pending--;
-                    if (!pending) {
-                        rows = rows.filter(function (row) { return row && row.results.length; });
-                        if (successes && rows.length) complete(rows);
-                        else error('Не удалось загрузить подборки TMDB');
-                    }
+                    finish();
+                }, finish);
+            });
+
+            CURATED_DIRECTORS.forEach(function (director, directorIndex) {
+                request(directorCreditsUrl(director.id), function (movies) {
+                    successes++;
+                    rows[configs.length + directorIndex] = {
+                        title: director.title + ' — фильмография',
+                        results: movies,
+                        total_pages: 1,
+                        params: {}
+                    };
+                    finish();
+                }, finish, function (response) {
+                    return directorMovies(response, object);
                 });
             });
         }
 
         function loadSearch(complete, error) {
-            request(searchUrl(object), function (data) {
-                var movies = data.results.slice(0, 20);
-                var matched = [];
-                var pending = movies.length;
+            var director = requestedDirector(object.search_query);
 
-                if (!pending) return error('Ничего не найдено');
-
-                movies.forEach(function (movie) {
-                    network.silent(keywordsUrl(movie.id), function (response) {
-                        var keywordData;
-                        try {
-                            keywordData = typeof response === 'string' ? JSON.parse(response) : response;
-                        } catch (e) {
-                            keywordData = {};
-                        }
-                        var ids = (keywordData.keywords || []).map(function (keyword) { return keyword.id; });
-                        if (ids.some(function (id) { return KEYWORD_IDS.indexOf(id) >= 0; })) matched.push(movie);
-                        pending--;
-                        if (!pending) finish();
-                    }, function () {
-                        pending--;
-                        if (!pending) finish();
-                    });
-                });
-
-                function finish() {
-                    matched.sort(function (a, b) { return b.vote_average - a.vote_average; });
-                    if (!matched.length) return error('В эротическом каталоге ничего не найдено');
+            if (director) {
+                return request(directorCreditsUrl(director.id), function (movies) {
+                    if (!movies.length) return error('Фильмы режиссёра не найдены');
                     complete([{
-                        title: 'Результаты поиска: ' + object.search_query,
-                        results: matched,
+                        title: director.title + ' — фильмография',
+                        results: movies,
                         total_pages: 1,
                         params: {}
                     }]);
-                }
+                }, error, function (response) {
+                    return directorMovies(response, object);
+                });
+            }
+
+            request(searchUrl(object), function (data) {
+                var movies = data.results.slice(0, 20);
+
+                if (!movies.length) return error('Ничего не найдено');
+
+                loadCuratedMovieIds(function (curatedIds) {
+                    var matched = [];
+                    var pending = movies.length;
+
+                    movies.forEach(function (movie) {
+                        if (curatedIds[movie.id]) {
+                            matched.push(movie);
+                            pending--;
+                            if (!pending) finish();
+                            return;
+                        }
+
+                        network.silent(keywordsUrl(movie.id), function (response) {
+                            var keywordData;
+                            try {
+                                keywordData = typeof response === 'string' ? JSON.parse(response) : response;
+                            } catch (e) {
+                                keywordData = {};
+                            }
+                            var ids = (keywordData.keywords || []).map(function (keyword) { return keyword.id; });
+                            if (ids.some(function (id) { return KEYWORD_IDS.indexOf(id) >= 0; })) matched.push(movie);
+                            pending--;
+                            if (!pending) finish();
+                        }, function () {
+                            pending--;
+                            if (!pending) finish();
+                        });
+                    });
+
+                    function finish() {
+                        matched.sort(function (a, b) { return b.vote_average - a.vote_average; });
+                        if (!matched.length) return error('В эротическом каталоге ничего не найдено');
+                        complete([{
+                            title: 'Результаты поиска: ' + object.search_query,
+                            results: matched,
+                            total_pages: 1,
+                            params: {}
+                        }]);
+                    }
+                });
             }, error);
+        }
+
+        function loadCuratedMovieIds(complete) {
+            var ids = {};
+            var pending = CURATED_DIRECTORS.length;
+
+            if (!pending) return complete(ids);
+
+            CURATED_DIRECTORS.forEach(function (director) {
+                request(directorCreditsUrl(director.id), function (movies) {
+                    movies.forEach(function (movie) { ids[movie.id] = true; });
+                    finish();
+                }, finish, function (response) {
+                    return directorMovies(response, object);
+                });
+            });
+
+            function finish() {
+                pending--;
+                if (!pending) complete(ids);
+            }
         }
 
         comp.use({
