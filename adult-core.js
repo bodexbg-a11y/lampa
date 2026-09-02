@@ -4,7 +4,7 @@
 
     var COMPONENT_ID = 'adult_catalog_component';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
-    var VERSION = '1.1.0';
+    var VERSION = '1.2.0';
 
     if (window.plugin_adult_catalog_ready) return;
     window.plugin_adult_catalog_ready = true;
@@ -58,12 +58,6 @@
         return data;
     }
 
-    function openExternal(url) {
-        if (!/^https?:\/\//i.test(url || '')) return notify('Ссылка источника отсутствует');
-        if (Lampa.Platform && typeof Lampa.Platform.open === 'function') Lampa.Platform.open(url);
-        else window.open(url, '_blank');
-    }
-
     function playPreview(movie) {
         if (!/^https?:\/\//i.test(movie.preview_url || '')) return notify('У этого фильма нет доступного превью');
         var controller = Lampa.Controller.enabled().name;
@@ -72,34 +66,69 @@
         Lampa.Player.callback(function () { Lampa.Controller.toggle(controller); });
     }
 
+    function playEmbed(source, movie) {
+        if (!/^https:\/\/www\.pornhub\.com\/embed\/[a-zA-Z0-9]+$/i.test(source.embed_url || '')) {
+            return notify('Некорректная ссылка встроенного плеера');
+        }
+        var controller = Lampa.Controller.enabled().name;
+        var frame = $('<iframe allow="autoplay; fullscreen; picture-in-picture" allowfullscreen frameborder="0"></iframe>');
+        frame.attr('src', source.embed_url);
+        frame.css({ width: '100%', height: '70vh', background: '#000', border: '0' });
+        Lampa.Modal.open({
+            title: source.provider + ' — ' + (source.title || movie.title),
+            html: frame,
+            size: 'large',
+            onBack: function () {
+                frame.attr('src', 'about:blank');
+                Lampa.Modal.close();
+                Lampa.Controller.toggle(controller);
+            }
+        });
+    }
+
     function showSources(movie) {
         var controller = Lampa.Controller.enabled().name;
-        var items = (movie.sources || []).map(function (source) {
-            return {
-                title: source.title || (source.kind === 'preview' ? 'Официальное превью' : 'Страница источника'),
-                source: source
-            };
+        var network = new Lampa.Reguest();
+        Lampa.Loading.start(function () {
+            network.clear();
+            Lampa.Loading.stop();
         });
-
-        if (!items.length && movie.preview_url) {
-            items.push({ title: 'Официальное превью', source: { kind: 'preview', url: movie.preview_url } });
-        }
-        if (!items.length && movie.source_url) {
-            items.push({ title: 'Официальная страница', source: { kind: 'page', url: movie.source_url } });
-        }
-        if (!items.length) return notify('Для этого фильма источники не указаны');
-
-        Lampa.Select.show({
-            title: 'Источники — ' + movie.title,
-            items: items,
-            onSelect: function (item) {
-                Lampa.Controller.toggle(controller);
-                if (item.source.kind === 'preview') {
-                    movie.preview_url = item.source.url;
-                    playPreview(movie);
-                } else openExternal(item.source.url);
-            },
-            onBack: function () { Lampa.Controller.toggle(controller); }
+        network.timeout(25000);
+        network.silent(apiUrl('/api/sources', { q: movie.title, year: movie.year || '' }), function (response) {
+            var data;
+            Lampa.Loading.stop();
+            try { data = typeof response === 'string' ? JSON.parse(response) : response; }
+            catch (e) { data = {}; }
+            var items = [];
+            if (movie.preview_url) {
+                items.push({
+                    title: 'ThePornDB — официальное превью',
+                    source: { kind: 'preview', url: movie.preview_url }
+                });
+            }
+            (data.results || []).forEach(function (source) {
+                items.push({
+                    title: source.provider + ' • ' + source.title +
+                        (source.duration ? ' • ' + source.duration : ''),
+                    source: source
+                });
+            });
+            if (!items.length) return notify('Проигрываемые источники не найдены');
+            Lampa.Select.show({
+                title: 'Источники — ' + movie.title,
+                items: items,
+                onSelect: function (item) {
+                    Lampa.Controller.toggle(controller);
+                    if (item.source.kind === 'preview') {
+                        movie.preview_url = item.source.url;
+                        playPreview(movie);
+                    } else if (item.source.kind === 'embed') playEmbed(item.source, movie);
+                },
+                onBack: function () { Lampa.Controller.toggle(controller); }
+            });
+        }, function () {
+            Lampa.Loading.stop();
+            notify('Не удалось выполнить поиск источников');
         });
     }
 

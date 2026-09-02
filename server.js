@@ -57,6 +57,27 @@ function cleanYear(value) {
     return Number.isFinite(year) && year >= 1900 && year <= maximum ? String(year) : '';
 }
 
+function normalized(value) {
+    return String(value || '')
+        .toLowerCase()
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9а-яё]+/gi, ' ')
+        .trim();
+}
+
+function matchScore(title, query) {
+    const candidate = normalized(title);
+    const wanted = normalized(query);
+    if (!candidate || !wanted) return 0;
+    if (candidate === wanted) return 1000;
+    if (candidate.includes(wanted) || wanted.includes(candidate)) return 600;
+    const words = wanted.split(' ').filter((word) => word.length > 2);
+    if (!words.length) return 0;
+    const matched = words.filter((word) => candidate.includes(word)).length;
+    return Math.round(matched / words.length * 500);
+}
+
 function imageUrl(item) {
     if (typeof item.poster === 'string' && item.poster) return item.poster;
     if (typeof item.image === 'string' && item.image) return item.image;
@@ -173,6 +194,61 @@ async function movie(url, res) {
     json(res, 200, { result: mapMovie(item) });
 }
 
+async function sourceSearch(url, res) {
+    const query = cleanText(url.searchParams.get('q'), 160);
+    const year = cleanYear(url.searchParams.get('year'));
+    if (query.length < 2) return json(res, 400, { error: 'Search query is too short' });
+
+    const cacheKey = `pornhub:${query}:${year}`;
+    const cached = cache.get(cacheKey);
+    if (cached && Date.now() - cached.time < CACHE_TTL_MS) return json(res, 200, cached.value);
+
+    const target = new URL('https://www.pornhub.com/webmasters/search');
+    target.searchParams.set('search', query);
+    target.searchParams.set('page', '1');
+    target.searchParams.set('thumbsize', 'small');
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    let response;
+    try {
+        response = await fetch(target, {
+            headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0 LampaAdultCatalog/1.2' },
+            signal: controller.signal
+        });
+    } finally {
+        clearTimeout(timer);
+    }
+    if (!response.ok) throw new Error(`Pornhub Webmaster API returned HTTP ${response.status}`);
+
+    const upstream = await response.json();
+    const results = (Array.isArray(upstream.videos) ? upstream.videos : []).map((item) => {
+        const id = cleanText(item.video_id, 100);
+        const published = cleanText(item.publish_date, 30);
+        let score = matchScore(item.title, query);
+        if (year && published.includes(year)) score += 40;
+        return {
+            id,
+            title: cleanText(item.title, 300),
+            provider: 'Pornhub',
+            kind: 'embed',
+            embed_url: /^[a-zA-Z0-9]+$/.test(id) ? `https://www.pornhub.com/embed/${id}` : '',
+            thumbnail: /^https?:\/\//i.test(item.default_thumb || '') ? item.default_thumb : '',
+            duration: cleanText(item.duration, 30),
+            rating: Number(item.rating || 0),
+            published,
+            score
+        };
+    }).filter((item) => item.embed_url && item.score > 0)
+        .sort((a, b) => b.score - a.score || b.rating - a.rating)
+        .slice(0, 15);
+
+    const payload = { results };
+    cache.set(cacheKey, { time: Date.now(), value: payload });
+    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+    return json(res, 200, payload);
+}
+
 const server = http.createServer(async (req, res) => {
     if (req.method === 'OPTIONS') return json(res, 204, {});
     if (req.method !== 'GET') return json(res, 405, { error: 'Method not allowed' });
@@ -185,6 +261,7 @@ const server = http.createServer(async (req, res) => {
         }
         if (url.pathname === '/api/movies') return await movies(url, res);
         if (url.pathname === '/api/movie') return await movie(url, res);
+        if (url.pathname === '/api/sources') return await sourceSearch(url, res);
         return json(res, 404, { error: 'Not found' });
     } catch (error) {
         console.error(error && error.message ? error.message : error);
