@@ -2,9 +2,8 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.6.0';
-    var COMPONENT_ID = 'adult_catalog_component_160';
-    var EMBED_COMPONENT_ID = 'adult_embed_player_component_160';
+    var VERSION = '1.6.1';
+    var COMPONENT_ID = 'adult_catalog_component_161';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
@@ -63,137 +62,48 @@
         return data;
     }
 
-    function playPreview(movie) {
-        if (!/^https?:\/\//i.test(movie.preview_url || '')) return notify('У этого фильма нет доступного превью');
+    function isDirectVideo(url) {
+        return /^https?:\/\//i.test(url || '') && /\.(mp4|m3u8)(?:[?#]|$)/i.test(url || '');
+    }
+
+    function playDirect(movie, source) {
+        var url = String(source && source.url || '');
+        if (!isDirectVideo(url)) return notify('Источник не поддерживает системный плеер');
         var controller = Lampa.Controller.enabled().name;
-        Lampa.Player.play({ title: movie.title, url: movie.preview_url });
-        Lampa.Player.playlist([{ title: movie.title, url: movie.preview_url }]);
+        var item = { title: movie.title, url: url };
+        Lampa.Player.play(item);
+        Lampa.Player.playlist([item]);
         Lampa.Player.callback(function () { Lampa.Controller.toggle(controller); });
-    }
-
-    function playEmbed(source, movie) {
-        var url = String(source.embed_url || '');
-        var allowed = [
-            /^https:\/\/www\.pornhub\.com\/embed\/[a-zA-Z0-9]+$/i,
-            /^https:\/\/www\.xvideos\.com\/embedframe\/[a-zA-Z0-9.]+$/i,
-            /^https:\/\/embed\.redtube\.com\/\?id=[0-9]+$/i,
-            /^https:\/\/www\.eporner\.com\/embed\/[a-zA-Z0-9]+\/$/i
-        ];
-        if (!allowed.some(function (pattern) { return pattern.test(url); })) {
-            return notify('Некорректная ссылка встроенного плеера');
-        }
-        Lampa.Activity.push({
-            url: 'adult-player/' + source.provider + '/' + source.id,
-            title: source.provider + ' — ' + (source.title || movie.title),
-            component: EMBED_COMPONENT_ID,
-            embed_url: url,
-            provider: source.provider,
-            movie: movie
-        });
-    }
-
-    function EmbedPlayer(object) {
-        var html = $('<div class="adult-embed-player" style="position:fixed;inset:0;z-index:9999;background:#000"></div>');
-        var close = $('<div class="selector" style="position:absolute;left:1.4em;top:1.2em;z-index:2;padding:.55em .85em;border-radius:.35em;background:rgba(0,0,0,.72);color:#fff;font-size:1.05em">← Назад · → управление</div>');
-        var frame = null;
-        var fadeTimer = null;
-        var loadTimer = null;
-
-        function unload() {
-            clearTimeout(fadeTimer);
-            clearTimeout(loadTimer);
-            if (!frame) return;
-            try { frame.attr('src', 'about:blank'); } catch (e) {}
-            frame.remove();
-            frame = null;
-        }
-
-        function mount() {
-            if (frame) return;
-            frame = $('<iframe allow="autoplay; fullscreen; picture-in-picture; encrypted-media" allowfullscreen frameborder="0" tabindex="0" sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"></iframe>');
-            frame.css({ width: '100%', height: '100%', background: '#000', border: '0', display: 'block' });
-            frame.one('load', function () { clearTimeout(loadTimer); });
-            html.prepend(frame);
-            frame.attr('src', object.embed_url);
-            loadTimer = setTimeout(function () {
-                notify('Источник загружается слишком долго — нажмите «Назад»');
-            }, 15000);
-        }
-
-        close.on('hover:enter', function () { Lampa.Activity.backward(); });
-        html.append(close);
-
-        this.create = function () { return this.render(); };
-        this.render = function () { return html; };
-        this.start = function () {
-            var component = this;
-            mount();
-            Lampa.Controller.add('adult_embed_player', {
-                link: component,
-                toggle: function () {
-                    Lampa.Controller.collectionSet(html[0]);
-                    Lampa.Controller.collectionFocus(close[0], html[0]);
-                },
-                right: function () { if (frame && frame[0]) frame[0].focus(); },
-                left: function () { Lampa.Controller.collectionFocus(close[0], html[0]); },
-                back: function () { Lampa.Activity.backward(); }
-            });
-            Lampa.Controller.toggle('adult_embed_player');
-            fadeTimer = setTimeout(function () { close.css('opacity', '.25'); }, 2500);
-            close.on('hover:focus', function () { close.css('opacity', '1'); });
-        };
-        this.pause = unload;
-        this.stop = unload;
-        this.destroy = function () {
-            unload();
-            html.remove();
-        };
     }
 
     function showSources(movie) {
         var controller = Lampa.Controller.enabled().name;
-        var network = new Lampa.Reguest();
-        Lampa.Loading.start(function () {
-            network.clear();
-            Lampa.Loading.stop();
+        var seen = {};
+        var items = [];
+
+        function add(title, url) {
+            url = String(url || '');
+            if (!isDirectVideo(url) || seen[url]) return;
+            seen[url] = true;
+            items.push({ title: title, source: { kind: 'direct', title: title, url: url } });
+        }
+
+        add('TPDB — официальное превью', movie.preview_url);
+        (movie.sources || []).forEach(function (source) {
+            if (source && source.kind === 'preview') add(source.title || 'Прямое видео', source.url);
         });
-        network.timeout(25000);
-        network.silent(apiUrl('/api/sources', { q: movie.title, year: movie.year || '' }), function (response) {
-            var data;
-            Lampa.Loading.stop();
-            try { data = typeof response === 'string' ? JSON.parse(response) : response; }
-            catch (e) { data = {}; }
-            var items = [];
-            if (movie.preview_url) {
-                items.push({
-                    title: 'ThePornDB — официальное превью',
-                    source: { kind: 'preview', url: movie.preview_url }
-                });
-            }
-            (data.results || []).forEach(function (source) {
-                items.push({
-                    title: source.provider + ' • ' + source.title +
-                        (source.duration ? ' • ' + source.duration : '') +
-                        (source.availability === 'limited' ? ' • может быть недоступен' : ''),
-                    source: source
-                });
-            });
-            if (!items.length) return notify('Проигрываемые источники не найдены');
-            Lampa.Select.show({
-                title: 'Источники — ' + movie.title,
-                items: items,
-                onSelect: function (item) {
-                    Lampa.Controller.toggle(controller);
-                    if (item.source.kind === 'preview') {
-                        movie.preview_url = item.source.url;
-                        playPreview(movie);
-                    } else if (item.source.kind === 'embed') playEmbed(item.source, movie);
-                },
-                onBack: function () { Lampa.Controller.toggle(controller); }
-            });
-        }, function () {
-            Lampa.Loading.stop();
-            notify('Не удалось выполнить поиск источников');
+
+        if (!items.length) return notify('Для этой карточки нет прямого видео для Just Player');
+        if (items.length === 1) return playDirect(movie, items[0].source);
+
+        Lampa.Select.show({
+            title: 'Прямые источники — ' + movie.title,
+            items: items,
+            onSelect: function (item) {
+                Lampa.Controller.toggle(controller);
+                playDirect(movie, item.source);
+            },
+            onBack: function () { Lampa.Controller.toggle(controller); }
         });
     }
 
@@ -304,7 +214,7 @@
             var container = body.find('.buttons--container');
             container.find('.adult-catalog-source').remove();
             var button = $('<div class="full-start__button selector adult-catalog-source">' +
-                '<svg><use xlink:href="#sprite-play"></use></svg><span>Источники 18+</span></div>');
+                '<svg><use xlink:href="#sprite-play"></use></svg><span>Смотреть в плеере</span></div>');
             button.on('hover:enter', function () {
                 showSources(movie);
             });
@@ -544,7 +454,6 @@
         registerAdultSource();
         registerFullScreenButton();
         Lampa.Component.add(COMPONENT_ID, Catalog);
-        Lampa.Component.add(EMBED_COMPONENT_ID, EmbedPlayer);
         var icon = '<svg viewBox="0 0 24 24" width="34" height="34"><path fill="currentColor" d="M8 5v14l11-7z"/><circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
         Lampa.Menu.addButton(icon, 'Полное 18+ v' + VERSION, confirmAge);
         window.plugin_adult_catalog_ready = true;
