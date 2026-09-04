@@ -2,8 +2,8 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.6.1';
-    var COMPONENT_ID = 'adult_catalog_component_161';
+    var VERSION = '1.7.0';
+    var COMPONENT_ID = 'adult_catalog_component_170';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
@@ -39,6 +39,7 @@
         movie.img = movie.poster;
         movie.background_image = movie.background || movie.poster;
         movie.params = movie.params || {};
+        movie.sources = movie.sources || [];
         return movie;
     }
 
@@ -211,13 +212,17 @@
             if (!body || !body.find) return;
             var container = body.find('.buttons--container');
             container.find('.adult-catalog-source').remove();
+            body.find('.source--name').first().text(movie.catalog_type === 'scatgoon' ? 'ScatGoon' : 'TPDB');
+            var hasDirect = isDirectVideo(movie.preview_url) || (movie.sources || []).some(function (source) {
+                return source && source.kind === 'preview' && isDirectVideo(source.url);
+            });
+            if (!hasDirect) return;
             var button = $('<div class="full-start__button selector adult-catalog-source">' +
                 '<svg><use xlink:href="#sprite-play"></use></svg><span>Смотреть в плеере</span></div>');
             button.on('hover:enter', function () {
                 showSources(movie);
             });
             container.append(button);
-            body.find('.source--name').first().text('TPDB');
         });
     }
 
@@ -226,6 +231,7 @@
     }
 
     function openMovie(movie) {
+        if (movie.catalog_type === 'scatgoon') return showDetails(movie);
         var network = new Lampa.Reguest();
         Lampa.Loading.start(function () {
             network.clear();
@@ -246,16 +252,14 @@
         });
     }
 
-    function openCatalog(search, year) {
+    function openCatalog(search) {
         var title = 'Полное 18+';
         if (search) title += ' — ' + search;
-        if (year) title += ' (' + year + ')';
         Lampa.Activity.push({
             url: 'adult-catalog',
             title: title,
             component: COMPONENT_ID,
             search_query: search || '',
-            filter_year: year || '',
             page: 1
         });
     }
@@ -263,36 +267,13 @@
     function askSearch(object) {
         var controller = Lampa.Controller.enabled().name;
         Lampa.Input.edit({
-            title: 'Название фильма',
+            title: 'Поиск видео',
             value: object.search_query || '',
             free: true,
             nosave: true
         }, function (value) {
             Lampa.Controller.toggle(controller);
-            openCatalog((value || '').trim(), object.filter_year || '');
-        });
-    }
-
-    function askYear(object) {
-        var controller = Lampa.Controller.enabled().name;
-        var current = new Date().getFullYear();
-        var items = [{ title: 'Все годы', year: '', selected: !object.filter_year }];
-        var year;
-        for (year = current; year >= 1930; year--) {
-            items.push({
-                title: String(year),
-                year: String(year),
-                selected: String(object.filter_year || '') === String(year)
-            });
-        }
-        Lampa.Select.show({
-            title: 'Выберите год',
-            items: items,
-            onSelect: function (item) {
-                Lampa.Controller.toggle(controller);
-                openCatalog(object.search_query || '', item.year);
-            },
-            onBack: function () { Lampa.Controller.toggle(controller); }
+            openCatalog((value || '').trim());
         });
     }
 
@@ -303,14 +284,11 @@
         });
         var render = filter.render();
         var searchButton = render.find('.filter--search');
-        var yearButton = render.find('.filter--filter');
         render.find('.filter--sort').remove();
+        render.find('.filter--filter').remove();
 
         searchButton.off('hover:enter').on('hover:enter', function () { askSearch(object); });
         searchButton.find('div').text(object.search_query || 'Поиск').removeClass('hide');
-        yearButton.off('hover:enter').on('hover:enter', function () { askYear(object); });
-        yearButton.find('span').text('Год');
-        yearButton.find('div').text(object.filter_year || 'Все годы').removeClass('hide');
         return filter;
     }
 
@@ -348,7 +326,7 @@
 
         function request(params, complete, error) {
             network.timeout(25000);
-            network.silent(apiUrl('/api/movies', params), function (response) {
+            network.silent(apiUrl('/api/scatgoon', params), function (response) {
                 try { complete(parseResponse(response)); }
                 catch (e) { error('Сервер вернул некорректный ответ'); }
             }, function () { error('Не удалось подключиться к серверу каталога'); });
@@ -359,9 +337,9 @@
             var pending = 3;
             var successes = 0;
             var configs = [
-                { title: 'Новые фильмы', mode: 'new', page: 1 },
-                { title: 'Лучшее по рейтингу', mode: 'rating', page: 2 },
-                { title: 'Ещё фильмы', mode: 'all', page: 3 }
+                { title: 'Новые видео', page: 1 },
+                { title: 'Ещё видео', page: 2 },
+                { title: 'Больше видео', page: 3 }
             ];
 
             function finish() {
@@ -373,7 +351,7 @@
             }
 
             configs.forEach(function (config, index) {
-                request({ page: config.page, year: object.filter_year || '', mode: config.mode }, function (data) {
+                request({ page: config.page }, function (data) {
                     successes++;
                     rows[index] = { title: config.title, results: data.results, total_pages: 1, params: {} };
                     finish();
@@ -382,7 +360,7 @@
         }
 
         function loadSearch(complete, error) {
-            request({ page: 1, year: object.filter_year || '', q: object.search_query }, function (data) {
+            request({ page: 1, q: object.search_query }, function (data) {
                 if (!data.results.length) return error('Ничего не найдено');
                 complete([{
                     title: 'Результаты поиска: ' + object.search_query,
@@ -421,7 +399,7 @@
     }
 
     function confirmAge() {
-        if (Lampa.Storage.get('adult_catalog_age_confirmed', false)) return openCatalog('', '');
+        if (Lampa.Storage.get('adult_catalog_age_confirmed', false)) return openCatalog('');
         var controller = Lampa.Controller.enabled().name;
         Lampa.Select.show({
             title: 'Раздел только для совершеннолетних',
@@ -433,7 +411,7 @@
                 Lampa.Controller.toggle(controller);
                 if (item.action === 'accept') {
                     Lampa.Storage.set('adult_catalog_age_confirmed', true);
-                    openCatalog('', '');
+                    openCatalog('');
                 }
             },
             onBack: function () { Lampa.Controller.toggle(controller); }

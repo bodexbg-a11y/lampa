@@ -244,6 +244,87 @@ function decodeHtml(value) {
     return decoded;
 }
 
+function parseNextFlightStrings(html) {
+    const chunks = [];
+    const pattern = /<script>self\.__next_f\.push\((\[[\s\S]*?\])\)<\/script>/g;
+    let match;
+    while ((match = pattern.exec(html))) {
+        try {
+            const payload = JSON.parse(match[1]);
+            if (typeof payload[1] === 'string') chunks.push(payload[1]);
+        } catch (error) {}
+    }
+    return chunks.join('\n');
+}
+
+function parseScatgoonVideos(html, latestOnly) {
+    let flight = parseNextFlightStrings(html);
+    if (latestOnly) {
+        const marker = flight.indexOf('Latest Videos');
+        if (marker >= 0) flight = flight.slice(marker);
+    }
+
+    const objectPattern = /\{"id":\d+,"slug":"(?:\\.|[^"])*","title":"(?:\\.|[^"])*","thumbnailPath":"(?:\\.|[^"])*","durationSeconds":\d+,"creators":\[(?:\\.|[^\]])*\],"categories":\[(?:\\.|[^\]])*\]\}/g;
+    const seen = new Set();
+    const results = [];
+    let match;
+    while ((match = objectPattern.exec(flight))) {
+        let item;
+        try { item = JSON.parse(match[0]); } catch (error) { continue; }
+        const id = cleanText(item.id, 30);
+        const slug = cleanText(item.slug, 240);
+        if (!id || !slug || seen.has(id)) continue;
+        seen.add(id);
+        const creators = Array.isArray(item.creators) ? item.creators.map((name) => cleanText(name, 150)).filter(Boolean) : [];
+        const categories = Array.isArray(item.categories) ? item.categories.map((name) => cleanText(name, 100)).filter(Boolean) : [];
+        const duration = Number(item.durationSeconds || 0);
+        results.push({
+            id: `sg-${id}`,
+            title: cleanText(item.title, 300) || 'Без названия',
+            date: '',
+            year: '',
+            description: [
+                creators.length ? `Автор: ${creators.join(', ')}` : '',
+                categories.length ? `Категории: ${categories.join(', ')}` : '',
+                duration ? `Продолжительность: ${Math.floor(duration / 60)}:${String(duration % 60).padStart(2, '0')}` : '',
+                'Воспроизведение пока не подключено.'
+            ].filter(Boolean).join('\n'),
+            poster: new URL(cleanText(item.thumbnailPath, 500), 'https://scatgoon.com').href,
+            background: new URL(cleanText(item.thumbnailPath, 500), 'https://scatgoon.com').href,
+            rating: 0,
+            duration,
+            studio: 'ScatGoon',
+            directors: [],
+            tags: categories,
+            performers: creators,
+            source_url: `https://scatgoon.com/video/${encodeURIComponent(slug)}`,
+            preview_url: '',
+            sources: [],
+            catalog_type: 'scatgoon'
+        });
+    }
+    return results;
+}
+
+async function scatgoon(url, res) {
+    const page = Math.max(1, Math.min(cleanPage(url.searchParams.get('page')), 100));
+    const query = cleanText(url.searchParams.get('q'), 120);
+    const target = query
+        ? new URL(`https://scatgoon.com/search?q=${encodeURIComponent(query)}`)
+        : new URL(`https://scatgoon.com/?latestPage=${page}`);
+    const cacheKey = `scatgoon:v1:${page}:${query}`;
+    const cached = cache.get(cacheKey);
+    if (cached && Date.now() - cached.time < CACHE_TTL_MS) return json(res, 200, cached.value);
+
+    const response = await fetchPage(target);
+    const html = (await response.text()).slice(0, 3000000);
+    const results = parseScatgoonVideos(html, !query);
+    const payload = { results, page, total_pages: results.length ? page + 1 : page, total: results.length };
+    cache.set(cacheKey, { time: Date.now(), value: payload });
+    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+    return json(res, 200, payload);
+}
+
 async function fetchPage(target, accept = 'text/html') {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
@@ -440,6 +521,7 @@ const server = http.createServer(async (req, res) => {
         if (url.pathname === '/plugin.js' || url.pathname === '/a18.js') return javascript(res);
         if (url.pathname === '/api/movies') return await movies(url, res);
         if (url.pathname === '/api/movie') return await movie(url, res);
+        if (url.pathname === '/api/scatgoon') return await scatgoon(url, res);
         if (url.pathname === '/api/sources') return await sourceSearch(url, res);
         return json(res, 404, { error: 'Not found' });
     } catch (error) {
