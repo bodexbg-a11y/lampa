@@ -2,8 +2,8 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.7.0';
-    var COMPONENT_ID = 'adult_catalog_component_170';
+    var VERSION = '1.8.0';
+    var COMPONENT_ID = 'adult_catalog_component_180';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
@@ -70,7 +70,7 @@
     function playDirect(movie, source) {
         var url = String(source && source.url || '');
         if (!isDirectVideo(url)) return notify('Источник не поддерживает системный плеер');
-        var item = { title: movie.title, url: url };
+        var item = { title: movie.title, url: url, isonline: true };
         Lampa.Player.play(item);
         Lampa.Player.playlist([item]);
     }
@@ -89,7 +89,9 @@
 
         add('TPDB — официальное превью', movie.preview_url);
         (movie.sources || []).forEach(function (source) {
-            if (source && source.kind === 'preview') add(source.title || 'Прямое видео', source.url);
+            if (source && (source.kind === 'preview' || source.kind === 'direct')) {
+                add(source.title || 'Прямое видео', source.url);
+            }
         });
 
         if (!items.length) return notify('Для этой карточки нет прямого видео для Just Player');
@@ -185,7 +187,8 @@
                 if (cached) return complete(fullData(cached));
                 var network = new Lampa.Reguest();
                 network.timeout(20000);
-                network.silent(apiUrl('/api/movie', { id: params.id }), function (response) {
+                var endpoint = String(params.id || '').indexOf('pt-') === 0 ? '/api/peertube/video' : '/api/movie';
+                network.silent(apiUrl(endpoint, { id: params.id }), function (response) {
                     var movie;
                     try {
                         var data = typeof response === 'string' ? JSON.parse(response) : response;
@@ -212,7 +215,8 @@
             if (!body || !body.find) return;
             var container = body.find('.buttons--container');
             container.find('.adult-catalog-source').remove();
-            body.find('.source--name').first().text(movie.catalog_type === 'scatgoon' ? 'ScatGoon' : 'TPDB');
+            var sourceName = movie.catalog_type === 'peertube' ? 'PeerTube' : (movie.catalog_type === 'scatgoon' ? 'ScatGoon' : 'TPDB');
+            body.find('.source--name').first().text(sourceName);
             var hasDirect = isDirectVideo(movie.preview_url) || (movie.sources || []).some(function (source) {
                 return source && source.kind === 'preview' && isDirectVideo(source.url);
             });
@@ -238,7 +242,8 @@
             Lampa.Loading.stop();
         });
         network.timeout(20000);
-        network.silent(apiUrl('/api/movie', { id: movie.id }), function (response) {
+        var endpoint = movie.catalog_type === 'peertube' ? '/api/peertube/video' : '/api/movie';
+        network.silent(apiUrl(endpoint, { id: movie.id }), function (response) {
             Lampa.Loading.stop();
             try {
                 var data = typeof response === 'string' ? JSON.parse(response) : response;
@@ -326,7 +331,7 @@
 
         function request(params, complete, error) {
             network.timeout(25000);
-            network.silent(apiUrl('/api/scatgoon', params), function (response) {
+            network.silent(apiUrl('/api/peertube', params), function (response) {
                 try { complete(parseResponse(response)); }
                 catch (e) { error('Сервер вернул некорректный ответ'); }
             }, function () { error('Не удалось подключиться к серверу каталога'); });
@@ -337,9 +342,9 @@
             var pending = 3;
             var successes = 0;
             var configs = [
-                { title: 'Новые видео', page: 1 },
-                { title: 'Ещё видео', page: 2 },
-                { title: 'Больше видео', page: 3 }
+                { title: 'Новые видео · прямой HLS', page: 1 },
+                { title: 'Ещё видео · прямой HLS', page: 2 },
+                { title: 'Больше видео · прямой HLS', page: 3 }
             ];
 
             function finish() {

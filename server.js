@@ -8,6 +8,7 @@ const { URL } = require('node:url');
 const PORT = Number(process.env.PORT || 3000);
 const TPDB_API_BASE = String(process.env.TPDB_API_BASE || 'https://api.theporndb.net').replace(/\/$/, '');
 const TPDB_API_TOKEN = String(process.env.TPDB_API_TOKEN || '');
+const PEERTUBE_BASE = String(process.env.PEERTUBE_BASE || 'https://peertube.boooks.lol').replace(/\/$/, '');
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_MAX = 200;
 const RATE_LIMIT = 90;
@@ -325,6 +326,107 @@ async function scatgoon(url, res) {
     return json(res, 200, payload);
 }
 
+function peerTubeImage(value) {
+    const path = cleanText(value, 600);
+    if (!path) return '';
+    try { return new URL(path, PEERTUBE_BASE).href; } catch (error) { return ''; }
+}
+
+function mapPeerTubeVideo(item, detailed = false) {
+    const uuid = cleanText(item.uuid || item.shortUUID, 80);
+    const tags = Array.isArray(item.tags) ? item.tags.map((tag) => cleanText(tag, 100)).filter(Boolean) : [];
+    const account = cleanText(item.account && (item.account.displayName || item.account.name), 150);
+    const category = cleanText(item.category && item.category.label, 100);
+    if (category && !tags.includes(category)) tags.push(category);
+    const duration = Number(item.duration || 0);
+    const published = cleanText(item.publishedAt || item.createdAt, 30);
+    const sources = [];
+
+    if (detailed) {
+        (Array.isArray(item.streamingPlaylists) ? item.streamingPlaylists : []).forEach((playlist) => {
+            const playlistUrl = cleanText(playlist.playlistUrl, 1000);
+            if (/^https?:\/\/.*\.m3u8(?:[?#]|$)/i.test(playlistUrl)) {
+                sources.push({ title: 'PeerTube HLS', url: playlistUrl, kind: 'direct' });
+            }
+        });
+        (Array.isArray(item.files) ? item.files : []).forEach((file) => {
+            const fileUrl = cleanText(file.fileUrl, 1000);
+            const label = cleanText(file.resolution && file.resolution.label, 40);
+            if (label.toLowerCase().includes('audio')) return;
+            if (/^https?:\/\/.*\.mp4(?:[?#]|$)/i.test(fileUrl)) {
+                sources.push({ title: `PeerTube MP4${label ? ` — ${label}` : ''}`, url: fileUrl, kind: 'direct' });
+            }
+        });
+    }
+
+    return {
+        id: `pt-${uuid}`,
+        peer_uuid: uuid,
+        title: cleanText(item.name || item.title, 300) || 'Без названия',
+        date: /^\d{4}-\d{2}-\d{2}/.test(published) ? published.slice(0, 10) : '',
+        year: /^\d{4}/.test(published) ? published.slice(0, 4) : '',
+        description: cleanText(item.description || item.truncatedDescription, 4000),
+        poster: peerTubeImage(item.thumbnailPath || item.previewPath),
+        background: peerTubeImage(item.previewPath || item.thumbnailPath),
+        rating: 0,
+        duration,
+        studio: account || 'PeerTube',
+        directors: [],
+        tags: tags.slice(0, 30),
+        performers: account ? [account] : [],
+        source_url: uuid ? `${PEERTUBE_BASE}/w/${encodeURIComponent(uuid)}` : '',
+        preview_url: '',
+        sources,
+        catalog_type: 'peertube'
+    };
+}
+
+async function peerTubeCatalog(url, res) {
+    const page = Math.max(1, Math.min(cleanPage(url.searchParams.get('page')), 100));
+    const query = cleanText(url.searchParams.get('q'), 120);
+    const count = 24;
+    const target = new URL(query ? '/api/v1/search/videos' : '/api/v1/videos', PEERTUBE_BASE);
+    target.searchParams.set('start', String((page - 1) * count));
+    target.searchParams.set('count', String(count));
+    target.searchParams.set('sort', '-publishedAt');
+    target.searchParams.set('nsfw', 'true');
+    target.searchParams.set('isLocal', 'true');
+    target.searchParams.set('hasHLSFiles', 'true');
+    if (query) target.searchParams.set('search', query);
+
+    const cacheKey = `peertube:v1:${page}:${query}`;
+    const cached = cache.get(cacheKey);
+    if (cached && Date.now() - cached.time < CACHE_TTL_MS) return json(res, 200, cached.value);
+    const response = await fetchPage(target, 'application/json');
+    const upstream = await response.json();
+    const results = (Array.isArray(upstream.data) ? upstream.data : [])
+        .filter((item) => item && item.nsfw === true)
+        .map((item) => mapPeerTubeVideo(item));
+    const total = Number(upstream.total || results.length);
+    const payload = { results, page, total_pages: Math.max(1, Math.ceil(total / count)), total };
+    cache.set(cacheKey, { time: Date.now(), value: payload });
+    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+    return json(res, 200, payload);
+}
+
+async function peerTubeVideo(url, res) {
+    const uuid = cleanText(url.searchParams.get('id'), 80).replace(/^pt-/, '');
+    if (!/^[a-f0-9-]{20,80}$/i.test(uuid)) return json(res, 400, { error: 'Invalid PeerTube id' });
+    const cacheKey = `peertube-video:v1:${uuid}`;
+    const cached = cache.get(cacheKey);
+    if (cached && Date.now() - cached.time < CACHE_TTL_MS) return json(res, 200, cached.value);
+    const target = new URL(`/api/v1/videos/${encodeURIComponent(uuid)}`, PEERTUBE_BASE);
+    const response = await fetchPage(target, 'application/json');
+    const upstream = await response.json();
+    if (!upstream || upstream.nsfw !== true) return json(res, 404, { error: 'Video is unavailable' });
+    const result = mapPeerTubeVideo(upstream, true);
+    if (!result.sources.length) return json(res, 404, { error: 'Direct stream is unavailable' });
+    const payload = { result };
+    cache.set(cacheKey, { time: Date.now(), value: payload });
+    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+    return json(res, 200, payload);
+}
+
 async function fetchPage(target, accept = 'text/html') {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 15000);
@@ -522,6 +624,8 @@ const server = http.createServer(async (req, res) => {
         if (url.pathname === '/api/movies') return await movies(url, res);
         if (url.pathname === '/api/movie') return await movie(url, res);
         if (url.pathname === '/api/scatgoon') return await scatgoon(url, res);
+        if (url.pathname === '/api/peertube') return await peerTubeCatalog(url, res);
+        if (url.pathname === '/api/peertube/video') return await peerTubeVideo(url, res);
         if (url.pathname === '/api/sources') return await sourceSearch(url, res);
         return json(res, 404, { error: 'Not found' });
     } catch (error) {
