@@ -230,7 +230,7 @@ async function movie(url, res) {
 
 function decodeHtml(value) {
     const named = { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>', nbsp: ' ' };
-    return String(value || '').replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (entity, code) => {
+    let decoded = String(value || '').replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (entity, code) => {
         if (code[0] === '#') {
             const hex = code[1].toLowerCase() === 'x';
             const point = Number.parseInt(code.slice(hex ? 2 : 1), hex ? 16 : 10);
@@ -238,6 +238,10 @@ function decodeHtml(value) {
         }
         return named[code.toLowerCase()] || entity;
     });
+    if (/[ÃÂ]/.test(decoded)) {
+        try { decoded = Buffer.from(decoded, 'latin1').toString('utf8'); } catch (error) {}
+    }
+    return decoded;
 }
 
 async function fetchPage(target, accept = 'text/html') {
@@ -325,38 +329,70 @@ async function searchXvideos(query, year) {
     return results;
 }
 
-async function searchXhamster(query, year) {
-    const target = new URL(`https://xhamster.com/search/${encodeURIComponent(query).replace(/%20/g, '+')}`);
+async function searchRedtube(query, year) {
+    const target = new URL('https://api.redtube.com/');
+    target.searchParams.set('data', 'redtube.Videos.searchVideos');
+    target.searchParams.set('output', 'json');
+    target.searchParams.set('search', query);
     target.searchParams.set('page', '1');
-    const response = await fetchPage(target);
-    const html = (await response.text()).slice(0, 2000000);
-    const results = [];
-    const seen = new Set();
-    const pattern = /data-video-id="([0-9]+)"[\s\S]{0,3000}?href="https:\/\/xhamster\.com\/videos\/([^"]+)"[\s\S]{0,1200}?aria-label="([^"]+)"/gi;
-    let match;
-    while ((match = pattern.exec(html)) && results.length < 10) {
-        const id = cleanText(match[1], 40);
-        if (!id || seen.has(id)) continue;
-        seen.add(id);
-        const title = cleanText(decodeHtml(match[3]), 300);
-        let score = matchScore(title, query);
-        if (year && title.includes(year)) score += 40;
-        if (!relevantTitle(title, query)) continue;
-        results.push({
+    const response = await fetchPage(target, 'application/json');
+    const upstream = await response.json();
+    return (Array.isArray(upstream.videos) ? upstream.videos : []).map((entry) => entry && entry.video || {})
+        .map((item) => {
+            const id = cleanText(item.video_id, 100);
+            const title = cleanText(decodeHtml(item.title), 300);
+            const published = cleanText(item.publish_date, 30);
+            let score = matchScore(title, query);
+            if (year && published.includes(year)) score += 40;
+            return {
+                id,
+                title,
+                provider: 'RedTube',
+                kind: 'embed',
+                embed_url: /^https:\/\/embed\.redtube\.com\/\?id=[0-9]+$/i.test(item.embed_url || '') ? item.embed_url : '',
+                thumbnail: /^https?:\/\//i.test(item.default_thumb || '') ? item.default_thumb : '',
+                duration: cleanText(item.duration, 30),
+                rating: Number(item.rating || 0),
+                published,
+                score
+            };
+        }).filter((item) => item.embed_url && relevantTitle(item.title, query))
+        .sort((a, b) => b.score - a.score || b.rating - a.rating)
+        .slice(0, 10);
+}
+
+async function searchEporner(query, year) {
+    const target = new URL('https://www.eporner.com/api/v2/video/search/');
+    target.searchParams.set('query', query);
+    target.searchParams.set('per_page', '20');
+    target.searchParams.set('page', '1');
+    target.searchParams.set('thumbsize', 'medium');
+    target.searchParams.set('order', 'best');
+    const response = await fetchPage(target, 'application/json');
+    const upstream = await response.json();
+    return (Array.isArray(upstream.videos) ? upstream.videos : []).map((item) => {
+        const id = cleanText(item.id, 100);
+        const title = cleanText(decodeHtml(item.title), 300);
+        const searchable = `${title} ${cleanText(decodeHtml(item.keywords), 1000)}`;
+        const published = cleanText(item.added, 30);
+        let score = Math.max(matchScore(title, query), matchScore(searchable, query));
+        if (year && (title.includes(year) || published.includes(year))) score += 40;
+        return {
             id,
             title,
-            provider: 'xHamster',
+            provider: 'Eporner',
             kind: 'embed',
-            embed_url: `https://xhamster.com/embed/${id}`,
-            thumbnail: '',
-            duration: '',
-            rating: 0,
-            published: '',
-            availability: 'limited',
-            score
-        });
-    }
-    return results;
+            embed_url: /^https:\/\/www\.eporner\.com\/embed\/[a-zA-Z0-9]+\/$/i.test(item.embed || '') ? item.embed : '',
+            thumbnail: item.default_thumb && /^https?:\/\//i.test(item.default_thumb.src || '') ? item.default_thumb.src : '',
+            duration: cleanText(item.length_min, 30),
+            rating: Number(item.rate || 0),
+            published,
+            score,
+            relevant: relevantTitle(searchable, query)
+        };
+    }).filter((item) => item.embed_url && item.relevant)
+        .sort((a, b) => b.score - a.score || b.rating - a.rating)
+        .slice(0, 10);
 }
 
 async function sourceSearch(url, res) {
@@ -364,14 +400,15 @@ async function sourceSearch(url, res) {
     const year = cleanYear(url.searchParams.get('year'));
     if (query.length < 2) return json(res, 400, { error: 'Search query is too short' });
 
-    const cacheKey = `sources:v3:${query}:${year}`;
+    const cacheKey = `sources:v5:${query}:${year}`;
     const cached = cache.get(cacheKey);
     if (cached && Date.now() - cached.time < CACHE_TTL_MS) return json(res, 200, cached.value);
 
     const providers = [
+        ['Eporner', searchEporner],
+        ['RedTube', searchRedtube],
         ['Pornhub', searchPornhub],
-        ['XVideos', searchXvideos],
-        ['xHamster', searchXhamster]
+        ['XVideos', searchXvideos]
     ];
     const settled = await Promise.allSettled(providers.map((provider) => provider[1](query, year)));
     const availability = {};

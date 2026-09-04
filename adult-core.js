@@ -2,9 +2,9 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.5.2';
-    var COMPONENT_ID = 'adult_catalog_component_152';
-    var EMBED_COMPONENT_ID = 'adult_embed_player_component_152';
+    var VERSION = '1.6.0';
+    var COMPONENT_ID = 'adult_catalog_component_160';
+    var EMBED_COMPONENT_ID = 'adult_embed_player_component_160';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
@@ -76,7 +76,8 @@
         var allowed = [
             /^https:\/\/www\.pornhub\.com\/embed\/[a-zA-Z0-9]+$/i,
             /^https:\/\/www\.xvideos\.com\/embedframe\/[a-zA-Z0-9.]+$/i,
-            /^https:\/\/xhamster\.com\/embed\/[0-9]+$/i
+            /^https:\/\/embed\.redtube\.com\/\?id=[0-9]+$/i,
+            /^https:\/\/www\.eporner\.com\/embed\/[a-zA-Z0-9]+\/$/i
         ];
         if (!allowed.some(function (pattern) { return pattern.test(url); })) {
             return notify('Некорректная ссылка встроенного плеера');
@@ -93,35 +94,58 @@
 
     function EmbedPlayer(object) {
         var html = $('<div class="adult-embed-player" style="position:fixed;inset:0;z-index:9999;background:#000"></div>');
-        var frame = $('<iframe allow="autoplay; fullscreen; picture-in-picture; encrypted-media" allowfullscreen frameborder="0" tabindex="0"></iframe>');
-        var close = $('<div class="selector" style="position:absolute;left:1.4em;top:1.2em;padding:.55em .85em;border-radius:.35em;background:rgba(0,0,0,.72);color:#fff;font-size:1.05em">← Назад</div>');
-        frame.attr('src', object.embed_url);
-        frame.css({ width: '100%', height: '100%', background: '#000', border: '0', display: 'block' });
+        var close = $('<div class="selector" style="position:absolute;left:1.4em;top:1.2em;z-index:2;padding:.55em .85em;border-radius:.35em;background:rgba(0,0,0,.72);color:#fff;font-size:1.05em">← Назад · → управление</div>');
+        var frame = null;
+        var fadeTimer = null;
+        var loadTimer = null;
+
+        function unload() {
+            clearTimeout(fadeTimer);
+            clearTimeout(loadTimer);
+            if (!frame) return;
+            try { frame.attr('src', 'about:blank'); } catch (e) {}
+            frame.remove();
+            frame = null;
+        }
+
+        function mount() {
+            if (frame) return;
+            frame = $('<iframe allow="autoplay; fullscreen; picture-in-picture; encrypted-media" allowfullscreen frameborder="0" tabindex="0" sandbox="allow-scripts allow-same-origin allow-forms allow-presentation"></iframe>');
+            frame.css({ width: '100%', height: '100%', background: '#000', border: '0', display: 'block' });
+            frame.one('load', function () { clearTimeout(loadTimer); });
+            html.prepend(frame);
+            frame.attr('src', object.embed_url);
+            loadTimer = setTimeout(function () {
+                notify('Источник загружается слишком долго — нажмите «Назад»');
+            }, 15000);
+        }
+
         close.on('hover:enter', function () { Lampa.Activity.backward(); });
-        html.append(frame).append(close);
+        html.append(close);
 
         this.create = function () { return this.render(); };
         this.render = function () { return html; };
         this.start = function () {
             var component = this;
+            mount();
             Lampa.Controller.add('adult_embed_player', {
                 link: component,
                 toggle: function () {
                     Lampa.Controller.collectionSet(html[0]);
                     Lampa.Controller.collectionFocus(close[0], html[0]);
                 },
-                right: function () { frame[0].focus(); },
+                right: function () { if (frame && frame[0]) frame[0].focus(); },
                 left: function () { Lampa.Controller.collectionFocus(close[0], html[0]); },
                 back: function () { Lampa.Activity.backward(); }
             });
             Lampa.Controller.toggle('adult_embed_player');
-            setTimeout(function () { close.css('opacity', '.25'); }, 2500);
+            fadeTimer = setTimeout(function () { close.css('opacity', '.25'); }, 2500);
             close.on('hover:focus', function () { close.css('opacity', '1'); });
         };
-        this.pause = function () {};
-        this.stop = function () {};
+        this.pause = unload;
+        this.stop = unload;
         this.destroy = function () {
-            frame.attr('src', 'about:blank');
+            unload();
             html.remove();
         };
     }
