@@ -2,8 +2,8 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.8.0';
-    var COMPONENT_ID = 'adult_catalog_component_180';
+    var VERSION = '1.8.1';
+    var COMPONENT_ID = 'adult_catalog_component_181';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
@@ -95,8 +95,6 @@
         });
 
         if (!items.length) return notify('Для этой карточки нет прямого видео для Just Player');
-        if (items.length === 1) return playDirect(movie, items[0].source);
-
         Lampa.Select.show({
             title: 'Прямые источники — ' + movie.title,
             items: items,
@@ -218,7 +216,7 @@
             var sourceName = movie.catalog_type === 'peertube' ? 'PeerTube' : (movie.catalog_type === 'scatgoon' ? 'ScatGoon' : 'TPDB');
             body.find('.source--name').first().text(sourceName);
             var hasDirect = isDirectVideo(movie.preview_url) || (movie.sources || []).some(function (source) {
-                return source && source.kind === 'preview' && isDirectVideo(source.url);
+                return source && (source.kind === 'preview' || source.kind === 'direct') && isDirectVideo(source.url);
             });
             if (!hasDirect) return;
             var button = $('<div class="full-start__button selector adult-catalog-source">' +
