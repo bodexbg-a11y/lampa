@@ -390,6 +390,14 @@ function mapPeerTubeVideo(item, detailed = false) {
             if (/^https?:\/\/.*\.m3u8(?:[?#]|$)/i.test(playlistUrl)) {
                 sources.push({ title: 'PeerTube HLS', url: playlistUrl, kind: 'direct' });
             }
+            (Array.isArray(playlist.files) ? playlist.files : []).forEach((file) => {
+                const fileUrl = cleanText(file.fileUrl, 1000);
+                const label = cleanText(file.resolution && file.resolution.label, 40);
+                if (label.toLowerCase().includes('audio')) return;
+                if (/^https?:\/\/.*\.mp4(?:[?#]|$)/i.test(fileUrl)) {
+                    sources.push({ title: `PeerTube MP4${label ? ` — ${label}` : ''}`, url: fileUrl, kind: 'direct' });
+                }
+            });
         });
         (Array.isArray(item.files) ? item.files : []).forEach((file) => {
             const fileUrl = cleanText(file.fileUrl, 1000);
