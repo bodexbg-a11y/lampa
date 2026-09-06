@@ -2,11 +2,12 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.8.1';
-    var COMPONENT_ID = 'adult_catalog_component_181';
+    var VERSION = '1.8.2';
+    var COMPONENT_ID = 'adult_catalog_component_182';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
+    var playerRecoveryCleanup = null;
 
     // The old loader set a boolean before the menu was actually registered.
     // A failed/early load therefore blocked every subsequent update in the same
@@ -67,10 +68,76 @@
         return /^https?:\/\//i.test(url || '') && /\.(mp4|m3u8)(?:[?#]|$)/i.test(url || '');
     }
 
-    function playDirect(movie, source) {
+    function armPlayerRecovery(controller) {
+        if (playerRecoveryCleanup) playerRecoveryCleanup();
+        var leftApplication = false;
+        var externalStarted = false;
+        var restored = false;
+        var cleanupTimer;
+
+        function onExternal() {
+            externalStarted = true;
+            console.log('Adult Catalog external player started');
+        }
+
+        function cleanup() {
+            window.removeEventListener('blur', onBlur);
+            window.removeEventListener('focus', onFocus);
+            window.removeEventListener('pageshow', onPageShow);
+            document.removeEventListener('visibilitychange', onVisibility);
+            if (Lampa.Player && Lampa.Player.listener && Lampa.Player.listener.remove) {
+                Lampa.Player.listener.remove('external', onExternal);
+            }
+            clearTimeout(cleanupTimer);
+            if (playerRecoveryCleanup === cleanup) playerRecoveryCleanup = null;
+        }
+
+        function onBlur() {
+            leftApplication = true;
+            console.log('Adult Catalog player lost focus');
+        }
+
+        function restore(reason) {
+            if (!externalStarted || !leftApplication || restored) return;
+            restored = true;
+            cleanup();
+            setTimeout(function () {
+                try {
+                    if (Lampa.Select && Lampa.Select.opened && Lampa.Select.opened()) Lampa.Select.hide();
+                    if (Lampa.Loading && Lampa.Loading.stop) Lampa.Loading.stop();
+                    if (window.focus) window.focus();
+                    Lampa.Controller.toggle(controller || 'content');
+                    console.log('Adult Catalog navigation restored after player:', reason);
+                } catch (error) {
+                    console.log('Adult Catalog navigation restore failed:', error && error.message || error);
+                    try { Lampa.Controller.toggle('content'); } catch (fallbackError) {}
+                }
+            }, 250);
+        }
+
+        function onFocus() { restore('focus'); }
+        function onPageShow() { restore('pageshow'); }
+        function onVisibility() {
+            if (document.hidden) leftApplication = true;
+            else restore('visibility');
+        }
+
+        window.addEventListener('blur', onBlur);
+        window.addEventListener('focus', onFocus);
+        window.addEventListener('pageshow', onPageShow);
+        document.addEventListener('visibilitychange', onVisibility);
+        Lampa.Player.listener.follow('external', onExternal);
+        cleanupTimer = setTimeout(cleanup, 12 * 60 * 60 * 1000);
+        playerRecoveryCleanup = cleanup;
+    }
+
+    function playDirect(movie, source, controller) {
         var url = String(source && source.url || '');
         if (!isDirectVideo(url)) return notify('Источник не поддерживает системный плеер');
-        var item = { title: movie.title, url: url, isonline: true };
+        var externalAndroid = Lampa.Platform && Lampa.Platform.is && Lampa.Platform.is('android') &&
+            Lampa.Storage && Lampa.Storage.field && Lampa.Storage.field('player') === 'android';
+        if (externalAndroid) armPlayerRecovery(controller);
+        var item = { title: movie.title, url: url };
         Lampa.Player.play(item);
         Lampa.Player.playlist([item]);
     }
@@ -100,7 +167,8 @@
             items: items,
             onSelect: function (item) {
                 Lampa.Controller.toggle(controller);
-                playDirect(movie, item.source);
+                if (Lampa.Activity && Lampa.Activity.mixState) Lampa.Activity.mixState();
+                playDirect(movie, item.source, controller);
             },
             onBack: function () { Lampa.Controller.toggle(controller); }
         });
