@@ -2,8 +2,8 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.10.0';
-    var COMPONENT_ID = 'adult_catalog_component_1100';
+    var VERSION = '1.11.0';
+    var COMPONENT_ID = 'adult_catalog_component_1110';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
@@ -145,9 +145,21 @@
     function playDirect(movie, source, controller) {
         var url = String(source && source.url || '');
         if (!isDirectVideo(url)) return notify('Источник не поддерживает системный плеер');
-        var externalAndroid = Lampa.Platform && Lampa.Platform.is && Lampa.Platform.is('android') &&
-            Lampa.Storage && Lampa.Storage.field && Lampa.Storage.field('player') === 'android';
-        if (externalAndroid) armPlayerRecovery(controller);
+        var playerMode = movie.preferred_player || 'lampa';
+        if (playerMode === 'external') {
+            armPlayerRecovery(controller);
+            if (Lampa.Player.runas) Lampa.Player.runas('android');
+        } else {
+            if (playerRecoveryCleanup) playerRecoveryCleanup();
+            if (Lampa.Player.runas) Lampa.Player.runas('lampa');
+            if (Lampa.Player.callback) {
+                Lampa.Player.callback(function () {
+                    if (Lampa.Loading && Lampa.Loading.stop) Lampa.Loading.stop();
+                    if (Lampa.Keypad && Lampa.Keypad.enable) Lampa.Keypad.enable();
+                    Lampa.Controller.toggle(controller || 'content');
+                });
+            }
+        }
         var item = { title: movie.title, url: url };
         Lampa.Player.play(item);
         Lampa.Player.playlist([item]);
@@ -337,6 +349,7 @@
                 var data = typeof response === 'string' ? JSON.parse(response) : response;
                 var detailed = prepareMovie(data.result || movie);
                 detailed.preferred_quality = movie.preferred_quality || 'auto';
+                detailed.preferred_player = movie.preferred_player || 'lampa';
                 showDetails(detailed);
             } catch (e) {
                 showDetails(movie);
@@ -372,7 +385,12 @@
         { title: '240p', value: '240' }
     ];
 
-    function openCatalog(search, year, genre, quality, replace) {
+    var PLAYER_OPTIONS = [
+        { title: 'Встроенный Lampa — рекомендуется', value: 'lampa' },
+        { title: 'Внешний Android / Just Player', value: 'external' }
+    ];
+
+    function openCatalog(search, year, genre, quality, player, replace) {
         var title = 'Полное 18+';
         if (search) title += ' — ' + search;
         var activity = {
@@ -383,6 +401,7 @@
             filter_year: year || '',
             filter_genre: genre || '',
             filter_quality: quality || 'auto',
+            filter_player: player || 'lampa',
             page: 1
         };
         if (replace && Lampa.Activity.replace) Lampa.Activity.replace(activity, true);
@@ -398,7 +417,7 @@
             nosave: true
         }, function (value) {
             Lampa.Controller.toggle(controller);
-            openCatalog((value || '').trim(), object.filter_year, object.filter_genre, object.filter_quality, true);
+            openCatalog((value || '').trim(), object.filter_year, object.filter_genre, object.filter_quality, object.filter_player, true);
         });
     }
 
@@ -414,13 +433,17 @@
         } else if (type === 'genre') {
             title = 'Выберите жанр';
             items = GENRE_OPTIONS.slice();
-        } else {
+        } else if (type === 'quality') {
             title = 'Предпочитаемое качество';
             items = QUALITY_OPTIONS.slice();
+        } else {
+            title = 'Выберите способ воспроизведения';
+            items = PLAYER_OPTIONS.slice();
         }
         items.forEach(function (item) {
-            var selected = type === 'year' ? object.filter_year : (type === 'genre' ? object.filter_genre : object.filter_quality);
-            item.selected = item.value === (selected || (type === 'quality' ? 'auto' : ''));
+            var selected = type === 'year' ? object.filter_year :
+                (type === 'genre' ? object.filter_genre : (type === 'quality' ? object.filter_quality : object.filter_player));
+            item.selected = item.value === (selected || (type === 'quality' ? 'auto' : (type === 'player' ? 'lampa' : '')));
         });
         Lampa.Select.show({
             title: title,
@@ -433,6 +456,7 @@
                     type === 'year' ? item.value : object.filter_year,
                     type === 'genre' ? item.value : object.filter_genre,
                     type === 'quality' ? item.value : object.filter_quality,
+                    type === 'player' ? item.value : object.filter_player,
                     true
                 );
             },
@@ -450,7 +474,9 @@
         var yearButton = render.find('.filter--sort');
         var genreButton = render.find('.filter--filter');
         var qualityButton = genreButton.clone().removeClass('filter--filter').addClass('adult-filter--quality');
+        var playerButton = genreButton.clone().removeClass('filter--filter').addClass('adult-filter--player');
         genreButton.after(qualityButton);
+        qualityButton.after(playerButton);
 
         searchButton.off('hover:enter').on('hover:enter', function () { askSearch(object); });
         searchButton.find('div').text(object.search_query || 'Поиск').removeClass('hide');
@@ -465,6 +491,10 @@
         qualityButton.find('span').text('Качество');
         var chosenQuality = QUALITY_OPTIONS.filter(function (item) { return item.value === (object.filter_quality || 'auto'); })[0];
         qualityButton.find('div').text(chosenQuality ? chosenQuality.title : 'Авто').removeClass('hide');
+        playerButton.off('hover:enter').on('hover:enter', function () { chooseFilter(object, 'player'); });
+        playerButton.find('span').text('Плеер');
+        var chosenPlayer = PLAYER_OPTIONS.filter(function (item) { return item.value === (object.filter_player || 'lampa'); })[0];
+        playerButton.find('div').text(chosenPlayer && chosenPlayer.value === 'external' ? 'Внешний' : 'Lampa').removeClass('hide');
         return filter;
     }
 
@@ -561,6 +591,7 @@
                         card.use({
                             onlyEnter: function () {
                                 data.preferred_quality = object.filter_quality || 'auto';
+                                data.preferred_player = object.filter_player || 'lampa';
                                 openMovie(data);
                             },
                             onFocus: function () {
@@ -578,7 +609,7 @@
     }
 
     function confirmAge() {
-        if (Lampa.Storage.get('adult_catalog_age_confirmed', false)) return openCatalog('', '', '', 'auto');
+        if (Lampa.Storage.get('adult_catalog_age_confirmed', false)) return openCatalog('', '', '', 'auto', 'lampa');
         var controller = Lampa.Controller.enabled().name;
         Lampa.Select.show({
             title: 'Раздел только для совершеннолетних',
@@ -590,7 +621,7 @@
                 Lampa.Controller.toggle(controller);
                 if (item.action === 'accept') {
                     Lampa.Storage.set('adult_catalog_age_confirmed', true);
-                    openCatalog('', '', '', 'auto');
+                    openCatalog('', '', '', 'auto', 'lampa');
                 }
             },
             onBack: function () { Lampa.Controller.toggle(controller); }
