@@ -2,8 +2,8 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.8.2';
-    var COMPONENT_ID = 'adult_catalog_component_182';
+    var VERSION = '1.9.0';
+    var COMPONENT_ID = 'adult_catalog_component_190';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
@@ -323,16 +323,35 @@
         });
     }
 
-    function openCatalog(search) {
+    var GENRE_OPTIONS = [
+        { title: 'Все жанры', value: '' },
+        { title: 'Классика', value: 'classic' },
+        { title: 'Комедия', value: 'comedy' },
+        { title: 'Драма', value: 'drama' },
+        { title: 'Триллер / криминал', value: 'thriller' },
+        { title: 'Ужасы / мистика', value: 'horror' },
+        { title: 'Приключения / фэнтези', value: 'adventure' },
+        { title: 'Документальное', value: 'documentary' },
+        { title: 'Лесби', value: 'lesbian' },
+        { title: 'Гей', value: 'gay' },
+        { title: 'BDSM / фетиш', value: 'bdsm' },
+        { title: 'Пародия', value: 'parody' }
+    ];
+
+    function openCatalog(search, year, genre, replace) {
         var title = 'Полное 18+';
         if (search) title += ' — ' + search;
-        Lampa.Activity.push({
+        var activity = {
             url: 'adult-catalog',
             title: title,
             component: COMPONENT_ID,
             search_query: search || '',
+            filter_year: year || '',
+            filter_genre: genre || '',
             page: 1
-        });
+        };
+        if (replace && Lampa.Activity.replace) Lampa.Activity.replace(activity, true);
+        else Lampa.Activity.push(activity);
     }
 
     function askSearch(object) {
@@ -344,7 +363,40 @@
             nosave: true
         }, function (value) {
             Lampa.Controller.toggle(controller);
-            openCatalog((value || '').trim());
+            openCatalog((value || '').trim(), object.filter_year, object.filter_genre, true);
+        });
+    }
+
+    function chooseFilter(object, type) {
+        var controller = Lampa.Controller.enabled().name;
+        var items = [];
+        var title;
+        if (type === 'year') {
+            title = 'Выберите год фильма';
+            items.push({ title: 'Все годы', value: '' });
+            var currentYear = new Date().getFullYear();
+            for (var year = currentYear; year >= 1960; year--) items.push({ title: String(year), value: String(year) });
+        } else {
+            title = 'Выберите жанр';
+            items = GENRE_OPTIONS.slice();
+        }
+        items.forEach(function (item) {
+            item.selected = item.value === (type === 'year' ? object.filter_year : object.filter_genre);
+        });
+        Lampa.Select.show({
+            title: title,
+            items: items,
+            onSelect: function (item) {
+                Lampa.Controller.toggle(controller);
+                if (Lampa.Activity && Lampa.Activity.mixState) Lampa.Activity.mixState();
+                openCatalog(
+                    object.search_query,
+                    type === 'year' ? item.value : object.filter_year,
+                    type === 'genre' ? item.value : object.filter_genre,
+                    true
+                );
+            },
+            onBack: function () { Lampa.Controller.toggle(controller); }
         });
     }
 
@@ -355,11 +407,18 @@
         });
         var render = filter.render();
         var searchButton = render.find('.filter--search');
-        render.find('.filter--sort').remove();
-        render.find('.filter--filter').remove();
+        var yearButton = render.find('.filter--sort');
+        var genreButton = render.find('.filter--filter');
 
         searchButton.off('hover:enter').on('hover:enter', function () { askSearch(object); });
         searchButton.find('div').text(object.search_query || 'Поиск').removeClass('hide');
+        yearButton.off('hover:enter').on('hover:enter', function () { chooseFilter(object, 'year'); });
+        yearButton.find('span').text('Год');
+        yearButton.find('div').text(object.filter_year || 'Все').removeClass('hide');
+        genreButton.off('hover:enter').on('hover:enter', function () { chooseFilter(object, 'genre'); });
+        genreButton.find('span').text('Жанр');
+        var chosenGenre = GENRE_OPTIONS.filter(function (item) { return item.value === object.filter_genre; })[0];
+        genreButton.find('div').text(chosenGenre && chosenGenre.value ? chosenGenre.title : 'Все').removeClass('hide');
         return filter;
     }
 
@@ -422,7 +481,7 @@
             }
 
             configs.forEach(function (config, index) {
-                request({ page: config.page }, function (data) {
+                request({ page: config.page, year: object.filter_year, genre: object.filter_genre }, function (data) {
                     successes++;
                     rows[index] = { title: config.title, results: data.results, total_pages: 1, params: {} };
                     finish();
@@ -431,7 +490,7 @@
         }
 
         function loadSearch(complete, error) {
-            request({ page: 1, q: object.search_query }, function (data) {
+            request({ page: 1, q: object.search_query, year: object.filter_year, genre: object.filter_genre }, function (data) {
                 if (!data.results.length) return error('Ничего не найдено');
                 complete([{
                     title: 'Результаты поиска: ' + object.search_query,
@@ -470,7 +529,7 @@
     }
 
     function confirmAge() {
-        if (Lampa.Storage.get('adult_catalog_age_confirmed', false)) return openCatalog('');
+        if (Lampa.Storage.get('adult_catalog_age_confirmed', false)) return openCatalog('', '', '');
         var controller = Lampa.Controller.enabled().name;
         Lampa.Select.show({
             title: 'Раздел только для совершеннолетних',
@@ -482,7 +541,7 @@
                 Lampa.Controller.toggle(controller);
                 if (item.action === 'accept') {
                     Lampa.Storage.set('adult_catalog_age_confirmed', true);
-                    openCatalog('');
+                    openCatalog('', '', '');
                 }
             },
             onBack: function () { Lampa.Controller.toggle(controller); }

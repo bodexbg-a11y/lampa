@@ -332,6 +332,46 @@ function peerTubeImage(value) {
     try { return new URL(path, PEERTUBE_BASE).href; } catch (error) { return ''; }
 }
 
+const PEERTUBE_GENRES = {
+    classic: ['classic', 'vintage', 'retro'],
+    comedy: ['comedy', 'comic', 'funny', 'satire'],
+    drama: ['drama', 'dramatic'],
+    thriller: ['thriller', 'crime', 'detective', 'murder', 'mystery'],
+    horror: ['horror', 'supernatural', 'vampire', 'satan', 'occult'],
+    adventure: ['adventure', 'pirate', 'fantasy', 'historical'],
+    documentary: ['documentary', 'interview', 'behind the scenes'],
+    lesbian: ['lesbian', 'girl girl', 'sapphic'],
+    gay: ['gay', 'male male'],
+    bdsm: ['bdsm', 'bondage', 'dominatrix', 'fetish'],
+    parody: ['parody', 'spoof']
+};
+
+function peerTubeMovieYear(item) {
+    const title = cleanText(item.name || item.title, 300);
+    const description = cleanText(item.description || item.truncatedDescription, 4000);
+    const titleMatch = title.match(/(?:^|[^0-9])((?:19|20)\d{2})(?:[^0-9]|$)/);
+    if (titleMatch) return titleMatch[1];
+    const descriptionMatch = description.slice(0, 500).match(/(?:^|[^0-9])((?:19|20)\d{2})(?:[^0-9]|$)/);
+    return descriptionMatch ? descriptionMatch[1] : '';
+}
+
+function peerTubeGenres(item, year, tags) {
+    const haystack = normalized([
+        item.name,
+        item.title,
+        item.description,
+        item.truncatedDescription,
+        ...(tags || [])
+    ].filter(Boolean).join(' '));
+    const genres = [];
+    if (year && Number(year) < 2000) genres.push('classic');
+    Object.keys(PEERTUBE_GENRES).forEach((genre) => {
+        if (genre === 'classic' && genres.includes(genre)) return;
+        if (PEERTUBE_GENRES[genre].some((term) => haystack.includes(normalized(term)))) genres.push(genre);
+    });
+    return genres;
+}
+
 function mapPeerTubeVideo(item, detailed = false) {
     const uuid = cleanText(item.uuid || item.shortUUID, 80);
     const tags = Array.isArray(item.tags) ? item.tags.map((tag) => cleanText(tag, 100)).filter(Boolean) : [];
@@ -340,6 +380,8 @@ function mapPeerTubeVideo(item, detailed = false) {
     if (category && !tags.includes(category)) tags.push(category);
     const duration = Number(item.duration || 0);
     const published = cleanText(item.publishedAt || item.createdAt, 30);
+    const year = peerTubeMovieYear(item);
+    const genres = peerTubeGenres(item, year, tags);
     const sources = [];
 
     if (detailed) {
@@ -363,8 +405,8 @@ function mapPeerTubeVideo(item, detailed = false) {
         id: `pt-${uuid}`,
         peer_uuid: uuid,
         title: cleanText(item.name || item.title, 300) || 'Без названия',
-        date: /^\d{4}-\d{2}-\d{2}/.test(published) ? published.slice(0, 10) : '',
-        year: /^\d{4}/.test(published) ? published.slice(0, 4) : '',
+        date: year ? `${year}-01-01` : (/^\d{4}-\d{2}-\d{2}/.test(published) ? published.slice(0, 10) : ''),
+        year,
         description: cleanText(item.description || item.truncatedDescription, 4000),
         poster: peerTubeImage(item.thumbnailPath || item.previewPath),
         background: peerTubeImage(item.previewPath || item.thumbnailPath),
@@ -373,6 +415,7 @@ function mapPeerTubeVideo(item, detailed = false) {
         studio: account || 'PeerTube',
         directors: [],
         tags: tags.slice(0, 30),
+        genres,
         performers: account ? [account] : [],
         source_url: uuid ? `${PEERTUBE_BASE}/w/${encodeURIComponent(uuid)}` : '',
         preview_url: '',
@@ -384,25 +427,33 @@ function mapPeerTubeVideo(item, detailed = false) {
 async function peerTubeCatalog(url, res) {
     const page = Math.max(1, Math.min(cleanPage(url.searchParams.get('page')), 100));
     const query = cleanText(url.searchParams.get('q'), 120);
+    const year = cleanYear(url.searchParams.get('year'));
+    const genre = cleanText(url.searchParams.get('genre'), 30).toLowerCase();
+    const validGenre = Object.prototype.hasOwnProperty.call(PEERTUBE_GENRES, genre) ? genre : '';
     const count = 24;
     const target = new URL(query ? '/api/v1/search/videos' : '/api/v1/videos', PEERTUBE_BASE);
-    target.searchParams.set('start', String((page - 1) * count));
-    target.searchParams.set('count', String(count));
+    const locallyFiltered = Boolean(year || validGenre);
+    target.searchParams.set('start', locallyFiltered ? '0' : String((page - 1) * count));
+    target.searchParams.set('count', locallyFiltered ? '100' : String(count));
     target.searchParams.set('sort', '-publishedAt');
     target.searchParams.set('nsfw', 'true');
     target.searchParams.set('isLocal', 'true');
     target.searchParams.set('hasHLSFiles', 'true');
     if (query) target.searchParams.set('search', query);
 
-    const cacheKey = `peertube:v1:${page}:${query}`;
+    const cacheKey = `peertube:v2:${page}:${query}:${year}:${validGenre}`;
     const cached = cache.get(cacheKey);
     if (cached && Date.now() - cached.time < CACHE_TTL_MS) return json(res, 200, cached.value);
     const response = await fetchPage(target, 'application/json');
     const upstream = await response.json();
-    const results = (Array.isArray(upstream.data) ? upstream.data : [])
+    let results = (Array.isArray(upstream.data) ? upstream.data : [])
         .filter((item) => item && item.nsfw === true)
         .map((item) => mapPeerTubeVideo(item));
-    const total = Number(upstream.total || results.length);
+    if (year) results = results.filter((item) => item.year === year);
+    if (validGenre) results = results.filter((item) => item.genres.includes(validGenre));
+    const filteredTotal = results.length;
+    if (locallyFiltered) results = results.slice((page - 1) * count, page * count);
+    const total = locallyFiltered ? filteredTotal : Number(upstream.total || results.length);
     const payload = { results, page, total_pages: Math.max(1, Math.ceil(total / count)), total };
     cache.set(cacheKey, { time: Date.now(), value: payload });
     if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
