@@ -2,12 +2,11 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.11.0';
-    var COMPONENT_ID = 'adult_catalog_component_1110';
+    var VERSION = '1.12.0';
+    var COMPONENT_ID = 'adult_catalog_component_1120';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
-    var playerRecoveryCleanup = null;
 
     // The old loader set a boolean before the menu was actually registered.
     // A failed/early load therefore blocked every subsequent update in the same
@@ -68,99 +67,15 @@
         return /^https?:\/\//i.test(url || '') && /\.(mp4|m3u8)(?:[?#]|$)/i.test(url || '');
     }
 
-    function armPlayerRecovery(controller) {
-        if (playerRecoveryCleanup) playerRecoveryCleanup();
-        var externalStarted = false;
-        var restored = false;
-        var cleanupTimer;
-        var recoveryTimer;
-
-        function onExternal() {
-            externalStarted = true;
-            console.log('Adult Catalog external player started');
-            clearTimeout(recoveryTimer);
-            recoveryTimer = setTimeout(function () { restore('external-watchdog', true); }, 900);
-        }
-
-        function cleanup() {
-            window.removeEventListener('blur', onBlur);
-            window.removeEventListener('focus', onFocus);
-            window.removeEventListener('pageshow', onPageShow);
-            document.removeEventListener('visibilitychange', onVisibility);
-            if (Lampa.Player && Lampa.Player.listener && Lampa.Player.listener.remove) {
-                Lampa.Player.listener.remove('external', onExternal);
-            }
-            if (Lampa.Keypad && Lampa.Keypad.listener && Lampa.Keypad.listener.remove) {
-                Lampa.Keypad.listener.remove('keydown', onKeydown);
-            }
-            clearTimeout(recoveryTimer);
-            clearTimeout(cleanupTimer);
-            if (playerRecoveryCleanup === cleanup) playerRecoveryCleanup = null;
-        }
-
-        function onBlur() {
-            console.log('Adult Catalog player lost focus');
-        }
-
-        function restore(reason, immediate) {
-            if (!externalStarted || restored) return;
-            restored = true;
-            cleanup();
-            var apply = function () {
-                try {
-                    if (Lampa.Select && Lampa.Select.opened && Lampa.Select.opened()) Lampa.Select.hide();
-                    if (Lampa.Activity && Lampa.Activity.mixState) Lampa.Activity.mixState();
-                    if (Lampa.Loading && Lampa.Loading.stop) Lampa.Loading.stop();
-                    if (Lampa.Keypad && Lampa.Keypad.enable) Lampa.Keypad.enable();
-                    Lampa.Controller.toggle(controller || 'content');
-                    console.log('Adult Catalog navigation restored after player:', reason);
-                } catch (error) {
-                    console.log('Adult Catalog navigation restore failed:', error && error.message || error);
-                    try { Lampa.Controller.toggle('content'); } catch (fallbackError) {}
-                }
-            };
-            if (immediate) apply();
-            else setTimeout(apply, 150);
-        }
-
-        function onFocus() { restore('focus'); }
-        function onPageShow() { restore('pageshow'); }
-        function onVisibility() {
-            if (!document.hidden) restore('visibility');
-        }
-        function onKeydown() { restore('remote-key', true); }
-
-        window.addEventListener('blur', onBlur);
-        window.addEventListener('focus', onFocus);
-        window.addEventListener('pageshow', onPageShow);
-        document.addEventListener('visibilitychange', onVisibility);
-        Lampa.Player.listener.follow('external', onExternal);
-        if (Lampa.Keypad && Lampa.Keypad.listener && Lampa.Keypad.listener.follow) {
-            Lampa.Keypad.listener.follow('keydown', onKeydown);
-        }
-        cleanupTimer = setTimeout(cleanup, 6 * 60 * 60 * 1000);
-        playerRecoveryCleanup = cleanup;
-    }
-
-    function playDirect(movie, source, controller) {
+    function playDirect(movie, source) {
         var url = String(source && source.url || '');
         if (!isDirectVideo(url)) return notify('Источник не поддерживает системный плеер');
-        var playerMode = movie.preferred_player || 'lampa';
-        if (playerMode === 'external') {
-            armPlayerRecovery(controller);
-            if (Lampa.Player.runas) Lampa.Player.runas('android');
-        } else {
-            if (playerRecoveryCleanup) playerRecoveryCleanup();
-            if (Lampa.Player.runas) Lampa.Player.runas('lampa');
-            if (Lampa.Player.callback) {
-                Lampa.Player.callback(function () {
-                    if (Lampa.Loading && Lampa.Loading.stop) Lampa.Loading.stop();
-                    if (Lampa.Keypad && Lampa.Keypad.enable) Lampa.Keypad.enable();
-                    Lampa.Controller.toggle(controller || 'content');
-                });
-            }
-        }
-        var item = { title: movie.title, url: url };
+        var hash = Lampa.Utils.hash('adult-catalog:' + movie.id + ':' + (source.title || url));
+        var item = {
+            title: movie.title,
+            url: url,
+            timeline: Lampa.Timeline.view(hash)
+        };
         Lampa.Player.play(item);
         Lampa.Player.playlist([item]);
     }
@@ -202,7 +117,7 @@
             onSelect: function (item) {
                 Lampa.Controller.toggle(controller);
                 if (Lampa.Activity && Lampa.Activity.mixState) Lampa.Activity.mixState();
-                playDirect(movie, item.source, controller);
+                playDirect(movie, item.source);
             },
             onBack: function () { Lampa.Controller.toggle(controller); }
         });
@@ -349,7 +264,6 @@
                 var data = typeof response === 'string' ? JSON.parse(response) : response;
                 var detailed = prepareMovie(data.result || movie);
                 detailed.preferred_quality = movie.preferred_quality || 'auto';
-                detailed.preferred_player = movie.preferred_player || 'lampa';
                 showDetails(detailed);
             } catch (e) {
                 showDetails(movie);
@@ -385,12 +299,7 @@
         { title: '240p', value: '240' }
     ];
 
-    var PLAYER_OPTIONS = [
-        { title: 'Встроенный Lampa — рекомендуется', value: 'lampa' },
-        { title: 'Внешний Android / Just Player', value: 'external' }
-    ];
-
-    function openCatalog(search, year, genre, quality, player, replace) {
+    function openCatalog(search, year, genre, quality, replace) {
         var title = 'Полное 18+';
         if (search) title += ' — ' + search;
         var activity = {
@@ -401,7 +310,6 @@
             filter_year: year || '',
             filter_genre: genre || '',
             filter_quality: quality || 'auto',
-            filter_player: player || 'lampa',
             page: 1
         };
         if (replace && Lampa.Activity.replace) Lampa.Activity.replace(activity, true);
@@ -417,7 +325,7 @@
             nosave: true
         }, function (value) {
             Lampa.Controller.toggle(controller);
-            openCatalog((value || '').trim(), object.filter_year, object.filter_genre, object.filter_quality, object.filter_player, true);
+            openCatalog((value || '').trim(), object.filter_year, object.filter_genre, object.filter_quality, true);
         });
     }
 
@@ -433,17 +341,14 @@
         } else if (type === 'genre') {
             title = 'Выберите жанр';
             items = GENRE_OPTIONS.slice();
-        } else if (type === 'quality') {
+        } else {
             title = 'Предпочитаемое качество';
             items = QUALITY_OPTIONS.slice();
-        } else {
-            title = 'Выберите способ воспроизведения';
-            items = PLAYER_OPTIONS.slice();
         }
         items.forEach(function (item) {
             var selected = type === 'year' ? object.filter_year :
-                (type === 'genre' ? object.filter_genre : (type === 'quality' ? object.filter_quality : object.filter_player));
-            item.selected = item.value === (selected || (type === 'quality' ? 'auto' : (type === 'player' ? 'lampa' : '')));
+                (type === 'genre' ? object.filter_genre : object.filter_quality);
+            item.selected = item.value === (selected || (type === 'quality' ? 'auto' : ''));
         });
         Lampa.Select.show({
             title: title,
@@ -456,7 +361,6 @@
                     type === 'year' ? item.value : object.filter_year,
                     type === 'genre' ? item.value : object.filter_genre,
                     type === 'quality' ? item.value : object.filter_quality,
-                    type === 'player' ? item.value : object.filter_player,
                     true
                 );
             },
@@ -474,9 +378,7 @@
         var yearButton = render.find('.filter--sort');
         var genreButton = render.find('.filter--filter');
         var qualityButton = genreButton.clone().removeClass('filter--filter').addClass('adult-filter--quality');
-        var playerButton = genreButton.clone().removeClass('filter--filter').addClass('adult-filter--player');
         genreButton.after(qualityButton);
-        qualityButton.after(playerButton);
 
         searchButton.off('hover:enter').on('hover:enter', function () { askSearch(object); });
         searchButton.find('div').text(object.search_query || 'Поиск').removeClass('hide');
@@ -491,10 +393,6 @@
         qualityButton.find('span').text('Качество');
         var chosenQuality = QUALITY_OPTIONS.filter(function (item) { return item.value === (object.filter_quality || 'auto'); })[0];
         qualityButton.find('div').text(chosenQuality ? chosenQuality.title : 'Авто').removeClass('hide');
-        playerButton.off('hover:enter').on('hover:enter', function () { chooseFilter(object, 'player'); });
-        playerButton.find('span').text('Плеер');
-        var chosenPlayer = PLAYER_OPTIONS.filter(function (item) { return item.value === (object.filter_player || 'lampa'); })[0];
-        playerButton.find('div').text(chosenPlayer && chosenPlayer.value === 'external' ? 'Внешний' : 'Lampa').removeClass('hide');
         return filter;
     }
 
@@ -591,7 +489,6 @@
                         card.use({
                             onlyEnter: function () {
                                 data.preferred_quality = object.filter_quality || 'auto';
-                                data.preferred_player = object.filter_player || 'lampa';
                                 openMovie(data);
                             },
                             onFocus: function () {
@@ -609,7 +506,7 @@
     }
 
     function confirmAge() {
-        if (Lampa.Storage.get('adult_catalog_age_confirmed', false)) return openCatalog('', '', '', 'auto', 'lampa');
+        if (Lampa.Storage.get('adult_catalog_age_confirmed', false)) return openCatalog('', '', '', 'auto');
         var controller = Lampa.Controller.enabled().name;
         Lampa.Select.show({
             title: 'Раздел только для совершеннолетних',
@@ -621,7 +518,7 @@
                 Lampa.Controller.toggle(controller);
                 if (item.action === 'accept') {
                     Lampa.Storage.set('adult_catalog_age_confirmed', true);
-                    openCatalog('', '', '', 'auto', 'lampa');
+                    openCatalog('', '', '', 'auto');
                 }
             },
             onBack: function () { Lampa.Controller.toggle(controller); }

@@ -15,7 +15,7 @@
     }
 
     load(
-        'https://lampa-kakm.onrender.com/plugin.js?v=1.11.0',
-        'https://cdn.jsdelivr.net/gh/bodexbg-a11y/lampa@main/adult-core.js?v=1.11.0'
+        'https://lampa-kakm.onrender.com/plugin.js?v=1.12.0',
+        'https://cdn.jsdelivr.net/gh/bodexbg-a11y/lampa@main/adult-core.js?v=1.12.0'
     );
 }());
