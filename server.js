@@ -9,6 +9,7 @@ const PORT = Number(process.env.PORT || 3000);
 const TPDB_API_BASE = String(process.env.TPDB_API_BASE || 'https://api.theporndb.net').replace(/\/$/, '');
 const TPDB_API_TOKEN = String(process.env.TPDB_API_TOKEN || '');
 const PEERTUBE_BASE = String(process.env.PEERTUBE_BASE || 'https://peertube.boooks.lol').replace(/\/$/, '');
+const ARCHIVE_BASE = 'https://archive.org';
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_MAX = 200;
 const RATE_LIMIT = 90;
@@ -225,7 +226,7 @@ async function movies(url, res) {
         page: upstream.meta && upstream.meta.current_page || page,
         total_pages: upstream.meta && upstream.meta.last_page || 1,
         total: validGenre ? results.length : (upstream.meta && upstream.meta.total || results.length),
-        fallback: fallback === 'peertube' ? 'tpdb' : ''
+        fallback: fallback === 'peertube' || fallback === 'archive' ? 'tpdb' : ''
     });
 }
 
@@ -379,6 +380,194 @@ function peerTubeGenres(item, year, tags) {
         if (PEERTUBE_GENRES[genre].some((term) => haystack.includes(normalized(term)))) genres.push(genre);
     });
     return genres;
+}
+
+function archiveId(identifier) {
+    return `ia-${Buffer.from(String(identifier || ''), 'utf8').toString('base64url')}`;
+}
+
+function archiveIdentifier(id) {
+    const value = cleanText(id, 500).replace(/^ia-/, '');
+    if (!/^[a-zA-Z0-9_-]{2,400}$/.test(value)) return '';
+    try {
+        const decoded = Buffer.from(value, 'base64url').toString('utf8');
+        return /^[^/\\\u0000-\u001f]{1,200}$/.test(decoded) ? decoded : '';
+    } catch (error) {
+        return '';
+    }
+}
+
+function archiveValues(value) {
+    return (Array.isArray(value) ? value : [value]).map((item) => cleanText(item, 300)).filter(Boolean);
+}
+
+function archiveText(value, max) {
+    return cleanText((Array.isArray(value) ? value.join(' ') : value), max)
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
+function archiveYear(item) {
+    const explicit = cleanYear(Array.isArray(item.year) ? item.year[0] : item.year);
+    if (explicit) return explicit;
+    const date = archiveText(item.date, 40);
+    const match = date.match(/(?:^|[^0-9])((?:19|20)\d{2})(?:[^0-9]|$)/);
+    return match ? match[1] : '';
+}
+
+function mapArchiveItem(item) {
+    const identifier = cleanText(item.identifier, 200);
+    const year = archiveYear(item);
+    const tags = archiveValues(item.subject).slice(0, 50);
+    const creators = archiveValues(item.creator).slice(0, 20);
+    const image = `${ARCHIVE_BASE}/services/img/${encodeURIComponent(identifier)}`;
+    return {
+        id: archiveId(identifier),
+        archive_identifier: identifier,
+        title: archiveText(item.title, 300) || 'Без названия',
+        date: year ? `${year}-01-01` : archiveText(item.date, 10),
+        year,
+        description: archiveText(item.description, 4000),
+        poster: image,
+        background: image,
+        rating: 0,
+        duration: 0,
+        studio: creators[0] || 'Internet Archive',
+        directors: creators,
+        tags,
+        genres: peerTubeGenres({ title: item.title, description: item.description }, year, tags),
+        performers: [],
+        source_url: `${ARCHIVE_BASE}/details/${encodeURIComponent(identifier)}`,
+        preview_url: '',
+        sources: [],
+        catalog_type: 'archive'
+    };
+}
+
+function archivePhrase(value) {
+    const safe = cleanText(value, 120).replace(/["\\]/g, ' ').replace(/\s+/g, ' ').trim();
+    return safe ? `"${safe}"` : '';
+}
+
+function archiveQuery(query, year, genre) {
+    const clauses = [
+        'mediatype:movies',
+        'format:MPEG4',
+        '(subject:erotic OR subject:erotica OR subject:"adult film" OR subject:"adult films" OR subject:pornography)'
+    ];
+    const phrase = archivePhrase(query);
+    if (phrase) clauses.push(`(title:${phrase} OR description:${phrase} OR subject:${phrase})`);
+    if (year) clauses.push(`year:${year}`);
+    if (genre && PEERTUBE_GENRES[genre]) {
+        clauses.push(`subject:(${PEERTUBE_GENRES[genre].map(archivePhrase).filter(Boolean).join(' OR ')})`);
+    }
+    return clauses.join(' AND ');
+}
+
+function archiveIsAdult(item) {
+    const subjects = archiveValues(item.subject).map(normalized);
+    const explicitTags = new Set([
+        'porn', 'pornography', 'erotica', 'erotic', 'adult film', 'adult films',
+        'erotic film', 'erotic films', 'vintage porn', 'vintage erotica'
+    ]);
+    if (!subjects.some((subject) => explicitTags.has(subject))) return false;
+    const safetyText = normalized([item.title, item.description, ...subjects].filter(Boolean).join(' '));
+    return !/(^| )(child|children|underage|minor|preteen|schoolgirl)( |$)/.test(safetyText);
+}
+
+async function archiveCatalog(url, res) {
+    const page = Math.max(1, Math.min(cleanPage(url.searchParams.get('page')), 100));
+    const query = cleanText(url.searchParams.get('q'), 120);
+    const year = cleanYear(url.searchParams.get('year'));
+    const genre = cleanText(url.searchParams.get('genre'), 30).toLowerCase();
+    const validGenre = Object.prototype.hasOwnProperty.call(PEERTUBE_GENRES, genre) ? genre : '';
+    const count = 24;
+    const upstreamCount = 80;
+    const target = new URL('/advancedsearch.php', ARCHIVE_BASE);
+    target.searchParams.set('q', archiveQuery(query, year, validGenre));
+    ['identifier', 'title', 'description', 'date', 'year', 'subject', 'creator', 'downloads'].forEach((field) => {
+        target.searchParams.append('fl[]', field);
+    });
+    target.searchParams.set('rows', String(upstreamCount));
+    target.searchParams.set('page', String(page));
+    target.searchParams.append('sort[]', 'downloads desc');
+    target.searchParams.set('output', 'json');
+
+    const cacheKey = `archive:v1:${page}:${query}:${year}:${validGenre}`;
+    const cached = cache.get(cacheKey);
+    if (cached && Date.now() - cached.time < CACHE_TTL_MS) return json(res, 200, cached.value);
+    const response = await fetchPage(target, 'application/json');
+    const upstream = await response.json();
+    const docs = upstream && upstream.response && Array.isArray(upstream.response.docs) ? upstream.response.docs : [];
+    const results = docs.filter((item) => item && item.identifier && archiveIsAdult(item)).slice(0, count).map(mapArchiveItem);
+    const total = Number(upstream && upstream.response && upstream.response.numFound || results.length);
+    const payload = {
+        results,
+        page,
+        total_pages: Math.max(1, Math.ceil(total / upstreamCount)),
+        total,
+        fallback: 'archive'
+    };
+    cache.set(cacheKey, { time: Date.now(), value: payload });
+    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+    return json(res, 200, payload);
+}
+
+function archiveFileUrl(identifier, name) {
+    const filePath = String(name || '').split('/').map(encodeURIComponent).join('/');
+    return `${ARCHIVE_BASE}/download/${encodeURIComponent(identifier)}/${filePath}`;
+}
+
+function archiveQuality(file) {
+    const name = cleanText(file.name, 500);
+    const explicit = name.match(/(?:^|[^0-9])(2160|1440|1080|720|576|540|480|360|240)p?(?:[^0-9]|$)/i);
+    const height = Number(file.height || 0);
+    const value = explicit ? explicit[1] : (height ? String(height) : '');
+    return value ? `${value}p` : 'MP4';
+}
+
+function archiveDuration(value) {
+    if (Number.isFinite(Number(value))) return Math.round(Number(value));
+    const parts = String(value || '').split(':').map(Number);
+    if (!parts.length || parts.some((part) => !Number.isFinite(part))) return 0;
+    return Math.round(parts.reduce((total, part) => total * 60 + part, 0));
+}
+
+async function archiveVideo(url, res) {
+    const identifier = archiveIdentifier(url.searchParams.get('id'));
+    if (!identifier) return json(res, 400, { error: 'Invalid Internet Archive id' });
+    const cacheKey = `archive-video:v1:${identifier}`;
+    const cached = cache.get(cacheKey);
+    if (cached && Date.now() - cached.time < CACHE_TTL_MS) return json(res, 200, cached.value);
+    const target = new URL(`/metadata/${encodeURIComponent(identifier)}`, ARCHIVE_BASE);
+    const response = await fetchPage(target, 'application/json');
+    const upstream = await response.json();
+    if (!upstream || !upstream.metadata || upstream.is_dark === true) return json(res, 404, { error: 'Video is unavailable' });
+
+    const files = (Array.isArray(upstream.files) ? upstream.files : []).filter((file) => {
+        const name = cleanText(file && file.name, 500);
+        return file && file.private !== true && file.private !== 'true' && /\.mp4$/i.test(name) &&
+            !/(sample|preview|thumb|trailer)/i.test(name) && Number(file.size || 0) > 1000000;
+    }).sort((a, b) => {
+        const original = (value) => value.source === 'original' ? 1 : 0;
+        return original(b) - original(a) || Number(b.height || 0) - Number(a.height || 0) || Number(b.size || 0) - Number(a.size || 0);
+    }).slice(0, 20);
+    if (!files.length) return json(res, 404, { error: 'Direct MP4 is unavailable' });
+
+    const metadata = upstream.metadata;
+    const result = mapArchiveItem(metadata);
+    result.archive_identifier = identifier;
+    result.sources = files.map((file) => ({
+        title: `Internet Archive MP4 — ${archiveQuality(file)}`,
+        url: archiveFileUrl(identifier, file.name),
+        kind: 'direct'
+    }));
+    result.duration = Math.max(0, ...files.map((file) => archiveDuration(file.length)));
+    const payload = { result };
+    cache.set(cacheKey, { time: Date.now(), value: payload });
+    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+    return json(res, 200, payload);
 }
 
 function mapPeerTubeVideo(item, detailed = false) {
@@ -692,17 +881,33 @@ const server = http.createServer(async (req, res) => {
         if (url.pathname === '/api/movies') return await movies(url, res);
         if (url.pathname === '/api/movie') return await movie(url, res);
         if (url.pathname === '/api/scatgoon') return await scatgoon(url, res);
-        if (url.pathname === '/api/peertube') {
+        if (url.pathname === '/api/archive') {
             try {
-                return await peerTubeCatalog(url, res);
+                return await archiveCatalog(url, res);
             } catch (error) {
-                console.warn(`PeerTube catalog failed, using TPDB fallback: ${error && error.message || error}`);
-                url.searchParams.set('fallback', 'peertube');
+                console.warn(`Internet Archive catalog failed, using TPDB fallback: ${error && error.message || error}`);
+                url.searchParams.set('fallback', 'archive');
                 if (!url.searchParams.get('mode')) url.searchParams.set('mode', 'new');
                 return await movies(url, res);
             }
         }
+        if (url.pathname === '/api/peertube') {
+            try {
+                return await peerTubeCatalog(url, res);
+            } catch (error) {
+                console.warn(`PeerTube catalog failed, using Internet Archive fallback: ${error && error.message || error}`);
+                try {
+                    return await archiveCatalog(url, res);
+                } catch (archiveError) {
+                    console.warn(`Internet Archive catalog failed, using TPDB fallback: ${archiveError && archiveError.message || archiveError}`);
+                    url.searchParams.set('fallback', 'peertube');
+                    if (!url.searchParams.get('mode')) url.searchParams.set('mode', 'new');
+                    return await movies(url, res);
+                }
+            }
+        }
         if (url.pathname === '/api/peertube/video') return await peerTubeVideo(url, res);
+        if (url.pathname === '/api/archive/video') return await archiveVideo(url, res);
         if (url.pathname === '/api/sources') return await sourceSearch(url, res);
         return json(res, 404, { error: 'Not found' });
     } catch (error) {

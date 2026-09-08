@@ -2,8 +2,8 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.12.1';
-    var COMPONENT_ID = 'adult_catalog_component_1121';
+    var VERSION = '1.13.0';
+    var COMPONENT_ID = 'adult_catalog_component_1130';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
@@ -202,7 +202,9 @@
                 if (cached) return complete(fullData(cached));
                 var network = new Lampa.Reguest();
                 network.timeout(20000);
-                var endpoint = String(params.id || '').indexOf('pt-') === 0 ? '/api/peertube/video' : '/api/movie';
+                var id = String(params.id || '');
+                var endpoint = id.indexOf('pt-') === 0 ? '/api/peertube/video' :
+                    (id.indexOf('ia-') === 0 ? '/api/archive/video' : '/api/movie');
                 network.silent(apiUrl(endpoint, { id: params.id }), function (response) {
                     var movie;
                     try {
@@ -230,7 +232,9 @@
             if (!body || !body.find) return;
             var container = body.find('.buttons--container');
             container.find('.adult-catalog-source').remove();
-            var sourceName = movie.catalog_type === 'peertube' ? 'PeerTube' : (movie.catalog_type === 'scatgoon' ? 'ScatGoon' : 'TPDB');
+            var sourceName = movie.catalog_type === 'peertube' ? 'PeerTube' :
+                (movie.catalog_type === 'archive' ? 'Internet Archive' :
+                    (movie.catalog_type === 'scatgoon' ? 'ScatGoon' : 'TPDB'));
             body.find('.source--name').first().text(sourceName);
             var hasDirect = isDirectVideo(movie.preview_url) || (movie.sources || []).some(function (source) {
                 return source && (source.kind === 'preview' || source.kind === 'direct') && isDirectVideo(source.url);
@@ -257,7 +261,8 @@
             Lampa.Loading.stop();
         });
         network.timeout(20000);
-        var endpoint = movie.catalog_type === 'peertube' ? '/api/peertube/video' : '/api/movie';
+        var endpoint = movie.catalog_type === 'peertube' ? '/api/peertube/video' :
+            (movie.catalog_type === 'archive' ? '/api/archive/video' : '/api/movie');
         network.silent(apiUrl(endpoint, { id: movie.id }), function (response) {
             Lampa.Loading.stop();
             try {
@@ -430,7 +435,7 @@
 
         function request(params, complete, error) {
             network.timeout(25000);
-            network.silent(apiUrl('/api/peertube', params), function (response) {
+            network.silent(apiUrl('/api/archive', params), function (response) {
                 try { complete(parseResponse(response)); }
                 catch (e) { error('Сервер вернул некорректный ответ'); }
             }, function () { error('Не удалось подключиться к серверу каталога'); });
@@ -441,9 +446,9 @@
             var pending = 3;
             var successes = 0;
             var configs = [
-                { title: 'Новые видео · прямой HLS', page: 1 },
-                { title: 'Ещё видео · прямой HLS', page: 2 },
-                { title: 'Больше видео · прямой HLS', page: 3 }
+                { title: 'Популярное · Internet Archive MP4', page: 1 },
+                { title: 'Ещё видео · Internet Archive MP4', page: 2 },
+                { title: 'Больше видео · Internet Archive MP4', page: 3 }
             ];
 
             function finish() {
@@ -458,7 +463,7 @@
                 request({ page: config.page, year: object.filter_year, genre: object.filter_genre }, function (data) {
                     successes++;
                     rows[index] = {
-                        title: data.fallback === 'tpdb' ? config.title.replace('· прямой HLS', '· резерв TPDB') : config.title,
+                        title: data.fallback === 'tpdb' ? config.title.replace('· Internet Archive MP4', '· резерв TPDB') : config.title,
                         results: data.results,
                         total_pages: 1,
                         params: {}
