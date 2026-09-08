@@ -2,8 +2,8 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.12.0';
-    var COMPONENT_ID = 'adult_catalog_component_1120';
+    var VERSION = '1.12.1';
+    var COMPONENT_ID = 'adult_catalog_component_1121';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
@@ -457,7 +457,12 @@
             configs.forEach(function (config, index) {
                 request({ page: config.page, year: object.filter_year, genre: object.filter_genre }, function (data) {
                     successes++;
-                    rows[index] = { title: config.title, results: data.results, total_pages: 1, params: {} };
+                    rows[index] = {
+                        title: data.fallback === 'tpdb' ? config.title.replace('· прямой HLS', '· резерв TPDB') : config.title,
+                        results: data.results,
+                        total_pages: 1,
+                        params: {}
+                    };
                     finish();
                 }, finish);
             });
@@ -467,7 +472,7 @@
             request({ page: 1, q: object.search_query, year: object.filter_year, genre: object.filter_genre }, function (data) {
                 if (!data.results.length) return error('Ничего не найдено');
                 complete([{
-                    title: 'Результаты поиска: ' + object.search_query,
+                    title: (data.fallback === 'tpdb' ? 'Резерв TPDB · ' : '') + 'Результаты поиска: ' + object.search_query,
                     results: data.results,
                     total_pages: 1,
                     params: {}

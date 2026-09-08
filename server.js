@@ -202,13 +202,21 @@ async function movies(url, res) {
     const year = cleanYear(url.searchParams.get('year'));
     const query = cleanText(url.searchParams.get('q'), 120);
     const mode = cleanText(url.searchParams.get('mode'), 20);
+    const fallback = cleanText(url.searchParams.get('fallback'), 20);
+    const genre = cleanText(url.searchParams.get('genre'), 30).toLowerCase();
+    const validGenre = Object.prototype.hasOwnProperty.call(PEERTUBE_GENRES, genre) ? genre : '';
     const params = new URLSearchParams({ page: String(page), limit: '40' });
     if (year) params.set('year', year);
     if (query) params.set('parse', query);
 
     const upstream = await tpdb(`/movies?${params.toString()}`);
     let results = (Array.isArray(upstream.data) ? upstream.data : []).map(mapMovie);
+    results.forEach((item) => {
+        item.genres = peerTubeGenres({ name: item.title, description: item.description }, item.year, item.tags);
+        item.catalog_type = 'tpdb';
+    });
     if (year) results = results.filter((item) => !item.year || item.year === year);
+    if (validGenre) results = results.filter((item) => item.genres.includes(validGenre));
     if (mode === 'rating') results.sort((a, b) => b.rating - a.rating);
     if (mode === 'new') results.sort((a, b) => String(b.date).localeCompare(String(a.date)));
 
@@ -216,7 +224,8 @@ async function movies(url, res) {
         results,
         page: upstream.meta && upstream.meta.current_page || page,
         total_pages: upstream.meta && upstream.meta.last_page || 1,
-        total: upstream.meta && upstream.meta.total || results.length
+        total: validGenre ? results.length : (upstream.meta && upstream.meta.total || results.length),
+        fallback: fallback === 'peertube' ? 'tpdb' : ''
     });
 }
 
@@ -683,7 +692,16 @@ const server = http.createServer(async (req, res) => {
         if (url.pathname === '/api/movies') return await movies(url, res);
         if (url.pathname === '/api/movie') return await movie(url, res);
         if (url.pathname === '/api/scatgoon') return await scatgoon(url, res);
-        if (url.pathname === '/api/peertube') return await peerTubeCatalog(url, res);
+        if (url.pathname === '/api/peertube') {
+            try {
+                return await peerTubeCatalog(url, res);
+            } catch (error) {
+                console.warn(`PeerTube catalog failed, using TPDB fallback: ${error && error.message || error}`);
+                url.searchParams.set('fallback', 'peertube');
+                if (!url.searchParams.get('mode')) url.searchParams.set('mode', 'new');
+                return await movies(url, res);
+            }
+        }
         if (url.pathname === '/api/peertube/video') return await peerTubeVideo(url, res);
         if (url.pathname === '/api/sources') return await sourceSearch(url, res);
         return json(res, 404, { error: 'Not found' });
