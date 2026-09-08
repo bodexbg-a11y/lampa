@@ -416,12 +416,47 @@ function archiveYear(item) {
     return match ? match[1] : '';
 }
 
+function archiveRuntime(value) {
+    const text = archiveText(value, 80).toLowerCase().replace(/[.,]/g, ' ');
+    if (!text) return 0;
+    const words = text.match(/(?:(\d+)\s*(?:h|hr|hrs|hour|hours))?\s*(?:(\d+)\s*(?:m|min|mins|minute|minutes))?\s*(?:(\d+)\s*(?:s|sec|secs|second|seconds))?/i);
+    if (words && (words[1] || words[2] || words[3])) {
+        return Number(words[1] || 0) * 3600 + Number(words[2] || 0) * 60 + Number(words[3] || 0);
+    }
+    const parts = text.split(':').map(Number);
+    if (parts.length === 2 && parts.every(Number.isFinite)) return parts[0] * 60 + parts[1];
+    if (parts.length === 3 && parts.every(Number.isFinite)) {
+        // Some Archive encoders store MM:SS:frames instead of HH:MM:SS.
+        return parts[0] >= 10 ? parts[0] * 60 + parts[1] : parts[0] * 3600 + parts[1] * 60 + parts[2];
+    }
+    return Number.isFinite(Number(text)) ? Math.round(Number(text)) : 0;
+}
+
+function archiveDurationGroup(item, duration) {
+    const tags = archiveValues(item.subject);
+    const haystack = normalized([item.title, item.description, ...tags].filter(Boolean).join(' '));
+    if (/(^| )(collection|compilation|anthology|complete series|film pack)( |$)/.test(haystack)) return 'collection';
+    if (/(^| )(amateur|homemade|home video|home movie|webcam|camgirl|user generated)( |$)/.test(haystack)) return 'amateur';
+    if (duration > 0) {
+        if (duration < 20 * 60) return 'short';
+        if (duration < 60 * 60) return 'medium';
+        return 'feature';
+    }
+    if (/(^| )(adult film|erotic film|feature film|full movie)( |$)/.test(haystack)) return 'feature';
+    const size = Number(item.item_size || 0);
+    if (size > 0 && size < 200000000) return 'short';
+    if (size > 0 && size < 800000000) return 'medium';
+    return 'feature';
+}
+
 function mapArchiveItem(item) {
     const identifier = cleanText(item.identifier, 200);
     const year = archiveYear(item);
     const tags = archiveValues(item.subject).slice(0, 50);
     const creators = archiveValues(item.creator).slice(0, 20);
     const image = `${ARCHIVE_BASE}/services/img/${encodeURIComponent(identifier)}`;
+    const duration = archiveRuntime(item.runtime);
+    const durationGroup = archiveDurationGroup(item, duration);
     return {
         id: archiveId(identifier),
         archive_identifier: identifier,
@@ -432,7 +467,9 @@ function mapArchiveItem(item) {
         poster: image,
         background: image,
         rating: 0,
-        duration: 0,
+        duration,
+        duration_group: durationGroup,
+        duration_estimated: !duration,
         studio: creators[0] || 'Internet Archive',
         directors: creators,
         tags,
@@ -450,7 +487,7 @@ function archivePhrase(value) {
     return safe ? `"${safe}"` : '';
 }
 
-function archiveQuery(query, year, genre) {
+function archiveQuery(query, year, genre, duration) {
     const clauses = [
         'mediatype:movies',
         'format:MPEG4',
@@ -462,6 +499,11 @@ function archiveQuery(query, year, genre) {
     if (genre && PEERTUBE_GENRES[genre]) {
         clauses.push(`subject:(${PEERTUBE_GENRES[genre].map(archivePhrase).filter(Boolean).join(' OR ')})`);
     }
+    if (duration === 'amateur') clauses.push('(subject:amateur OR subject:"amateur porn" OR subject:homemade OR subject:webcam)');
+    if (duration === 'collection') clauses.push('(title:collection OR title:compilation OR title:anthology OR title:"complete series")');
+    if (duration === 'short') clauses.push('(item_size:[0 TO 199999999] OR runtime:[* TO *] OR subject:"short film" OR subject:clip OR subject:scene)');
+    if (duration === 'medium') clauses.push('(item_size:[200000000 TO 799999999] OR runtime:[* TO *])');
+    if (duration === 'feature') clauses.push('(item_size:[800000000 TO *] OR runtime:[* TO *] OR subject:"adult film" OR subject:"erotic film" OR title:"full movie")');
     return clauses.join(' AND ');
 }
 
@@ -482,32 +524,47 @@ async function archiveCatalog(url, res) {
     const year = cleanYear(url.searchParams.get('year'));
     const genre = cleanText(url.searchParams.get('genre'), 30).toLowerCase();
     const validGenre = Object.prototype.hasOwnProperty.call(PEERTUBE_GENRES, genre) ? genre : '';
-    const count = 24;
-    const upstreamCount = 80;
+    const duration = cleanText(url.searchParams.get('duration'), 20).toLowerCase();
+    const validDuration = ['short', 'medium', 'feature', 'amateur', 'collection'].includes(duration) ? duration : '';
+    const sort = cleanText(url.searchParams.get('sort'), 20).toLowerCase();
+    const validSort = ['popular', 'added', 'newest', 'oldest', 'title'].includes(sort) ? sort : 'popular';
+    const sortFields = {
+        popular: 'downloads desc',
+        added: 'publicdate desc',
+        newest: 'date desc',
+        oldest: 'date asc',
+        title: 'titleSorter asc'
+    };
+    const count = 60;
+    const upstreamCount = 160;
     const target = new URL('/advancedsearch.php', ARCHIVE_BASE);
-    target.searchParams.set('q', archiveQuery(query, year, validGenre));
-    ['identifier', 'title', 'description', 'date', 'year', 'subject', 'creator', 'downloads'].forEach((field) => {
+    target.searchParams.set('q', archiveQuery(query, year, validGenre, validDuration));
+    ['identifier', 'title', 'description', 'date', 'year', 'subject', 'creator', 'downloads', 'runtime', 'item_size', 'publicdate'].forEach((field) => {
         target.searchParams.append('fl[]', field);
     });
     target.searchParams.set('rows', String(upstreamCount));
     target.searchParams.set('page', String(page));
-    target.searchParams.append('sort[]', 'downloads desc');
+    target.searchParams.append('sort[]', sortFields[validSort]);
     target.searchParams.set('output', 'json');
 
-    const cacheKey = `archive:v1:${page}:${query}:${year}:${validGenre}`;
+    const cacheKey = `archive:v2:${page}:${query}:${year}:${validGenre}:${validDuration}:${validSort}`;
     const cached = cache.get(cacheKey);
     if (cached && Date.now() - cached.time < CACHE_TTL_MS) return json(res, 200, cached.value);
     const response = await fetchPage(target, 'application/json');
     const upstream = await response.json();
     const docs = upstream && upstream.response && Array.isArray(upstream.response.docs) ? upstream.response.docs : [];
-    const results = docs.filter((item) => item && item.identifier && archiveIsAdult(item)).slice(0, count).map(mapArchiveItem);
+    let results = docs.filter((item) => item && item.identifier && archiveIsAdult(item)).map(mapArchiveItem);
+    if (validDuration) results = results.filter((item) => item.duration_group === validDuration);
+    results = results.slice(0, count);
     const total = Number(upstream && upstream.response && upstream.response.numFound || results.length);
     const payload = {
         results,
         page,
         total_pages: Math.max(1, Math.ceil(total / upstreamCount)),
         total,
-        fallback: 'archive'
+        fallback: 'archive',
+        duration_filter: validDuration,
+        sort: validSort
     };
     cache.set(cacheKey, { time: Date.now(), value: payload });
     if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
@@ -564,6 +621,8 @@ async function archiveVideo(url, res) {
         kind: 'direct'
     }));
     result.duration = Math.max(0, ...files.map((file) => archiveDuration(file.length)));
+    result.duration_group = archiveDurationGroup(metadata, result.duration);
+    result.duration_estimated = false;
     const payload = { result };
     cache.set(cacheKey, { time: Date.now(), value: payload });
     if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);

@@ -2,8 +2,8 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.13.1';
-    var COMPONENT_ID = 'adult_catalog_component_1131';
+    var VERSION = '1.14.0';
+    var COMPONENT_ID = 'adult_catalog_component_1140';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
@@ -300,7 +300,6 @@
 
     var QUALITY_OPTIONS = [
         { title: 'Авто / все варианты', value: 'auto' },
-        { title: 'Адаптивное HLS', value: 'hls' },
         { title: '1080p', value: '1080' },
         { title: '720p', value: '720' },
         { title: '480p', value: '480' },
@@ -308,7 +307,29 @@
         { title: '240p', value: '240' }
     ];
 
-    function openCatalog(search, year, genre, quality, replace) {
+    var DURATION_OPTIONS = [
+        { title: 'Все форматы', value: '' },
+        { title: 'Полнометражные · 60+ мин', value: 'feature' },
+        { title: 'Средние · 20–60 мин', value: 'medium' },
+        { title: 'Короткие · до 20 мин', value: 'short' },
+        { title: 'Любительские / домашние', value: 'amateur' },
+        { title: 'Сборники', value: 'collection' }
+    ];
+
+    var SORT_OPTIONS = [
+        { title: 'По популярности', value: 'popular' },
+        { title: 'Недавно добавленные', value: 'added' },
+        { title: 'По году: сначала новые', value: 'newest' },
+        { title: 'По году: сначала старые', value: 'oldest' },
+        { title: 'По названию', value: 'title' }
+    ];
+
+    function optionTitle(items, value, fallback) {
+        var selected = items.filter(function (item) { return item.value === (value || ''); })[0];
+        return selected ? selected.title : fallback;
+    }
+
+    function openCatalog(search, year, genre, quality, duration, sort, replace) {
         var title = 'Полное 18+';
         if (search) title += ' — ' + search;
         var activity = {
@@ -319,6 +340,8 @@
             filter_year: year || '',
             filter_genre: genre || '',
             filter_quality: quality || 'auto',
+            filter_duration: duration || '',
+            filter_sort: sort || 'popular',
             page: 1
         };
         if (replace && Lampa.Activity.replace) Lampa.Activity.replace(activity, true);
@@ -334,7 +357,8 @@
             nosave: true
         }, function (value) {
             Lampa.Controller.toggle(controller);
-            openCatalog((value || '').trim(), object.filter_year, object.filter_genre, object.filter_quality, true);
+            openCatalog((value || '').trim(), object.filter_year, object.filter_genre, object.filter_quality,
+                object.filter_duration, object.filter_sort, true);
         });
     }
 
@@ -350,14 +374,21 @@
         } else if (type === 'genre') {
             title = 'Выберите жанр';
             items = GENRE_OPTIONS.slice();
+        } else if (type === 'duration') {
+            title = 'Формат и длительность';
+            items = DURATION_OPTIONS.slice();
+        } else if (type === 'sort') {
+            title = 'Сортировка каталога';
+            items = SORT_OPTIONS.slice();
         } else {
             title = 'Предпочитаемое качество';
             items = QUALITY_OPTIONS.slice();
         }
         items.forEach(function (item) {
-            var selected = type === 'year' ? object.filter_year :
-                (type === 'genre' ? object.filter_genre : object.filter_quality);
-            item.selected = item.value === (selected || (type === 'quality' ? 'auto' : ''));
+            var selected = type === 'year' ? object.filter_year : (type === 'genre' ? object.filter_genre :
+                (type === 'quality' ? object.filter_quality :
+                    (type === 'duration' ? object.filter_duration : object.filter_sort)));
+            item.selected = item.value === (selected || (type === 'quality' ? 'auto' : (type === 'sort' ? 'popular' : '')));
         });
         Lampa.Select.show({
             title: title,
@@ -370,6 +401,8 @@
                     type === 'year' ? item.value : object.filter_year,
                     type === 'genre' ? item.value : object.filter_genre,
                     type === 'quality' ? item.value : object.filter_quality,
+                    type === 'duration' ? item.value : object.filter_duration,
+                    type === 'sort' ? item.value : object.filter_sort,
                     true
                 );
             },
@@ -387,7 +420,11 @@
         var yearButton = render.find('.filter--sort');
         var genreButton = render.find('.filter--filter');
         var qualityButton = genreButton.clone().removeClass('filter--filter').addClass('adult-filter--quality');
+        var durationButton = genreButton.clone().removeClass('filter--filter').addClass('adult-filter--duration');
+        var sortButton = genreButton.clone().removeClass('filter--filter').addClass('adult-filter--sort');
         genreButton.after(qualityButton);
+        qualityButton.after(durationButton);
+        durationButton.after(sortButton);
 
         searchButton.off('hover:enter').on('hover:enter', function () { askSearch(object); });
         searchButton.find('div').text(object.search_query || 'Поиск').removeClass('hide');
@@ -402,6 +439,12 @@
         qualityButton.find('span').text('Качество');
         var chosenQuality = QUALITY_OPTIONS.filter(function (item) { return item.value === (object.filter_quality || 'auto'); })[0];
         qualityButton.find('div').text(chosenQuality ? chosenQuality.title : 'Авто').removeClass('hide');
+        durationButton.off('hover:enter').on('hover:enter', function () { chooseFilter(object, 'duration'); });
+        durationButton.find('span').text('Длительность');
+        durationButton.find('div').text(optionTitle(DURATION_OPTIONS, object.filter_duration, 'Все форматы')).removeClass('hide');
+        sortButton.off('hover:enter').on('hover:enter', function () { chooseFilter(object, 'sort'); });
+        sortButton.find('span').text('Сортировка');
+        sortButton.find('div').text(optionTitle(SORT_OPTIONS, object.filter_sort || 'popular', 'По популярности')).removeClass('hide');
         return filter;
     }
 
@@ -446,14 +489,20 @@
         }
 
         function loadHome(complete, error) {
-            var rows = new Array(3);
-            var pending = 3;
-            var successes = 0;
-            var configs = [
-                { title: 'Популярное · Internet Archive MP4', page: 1 },
-                { title: 'Ещё видео · Internet Archive MP4', page: 2 },
-                { title: 'Больше видео · Internet Archive MP4', page: 3 }
+            var selectedDuration = object.filter_duration || '';
+            var selectedSort = object.filter_sort || 'popular';
+            var configs = selectedDuration ? [{
+                title: optionTitle(DURATION_OPTIONS, selectedDuration, 'Видео') + ' · до 60 карточек',
+                duration: selectedDuration
+            }] : [
+                { title: 'Полнометражные фильмы · до 60 карточек', duration: 'feature' },
+                { title: 'Средние · 20–60 минут', duration: 'medium' },
+                { title: 'Короткие ролики · до 20 минут', duration: 'short' },
+                { title: 'Любительские / домашние', duration: 'amateur' }
             ];
+            var rows = new Array(configs.length);
+            var pending = configs.length;
+            var successes = 0;
 
             function finish() {
                 pending--;
@@ -464,10 +513,16 @@
             }
 
             configs.forEach(function (config, index) {
-                request({ page: config.page, year: object.filter_year, genre: object.filter_genre }, function (data) {
+                request({
+                    page: 1,
+                    year: object.filter_year,
+                    genre: object.filter_genre,
+                    duration: config.duration,
+                    sort: selectedSort
+                }, function (data) {
                     successes++;
                     rows[index] = {
-                        title: data.fallback === 'tpdb' ? config.title.replace('· Internet Archive MP4', '· резерв TPDB') : config.title,
+                        title: (data.fallback === 'tpdb' ? 'Резерв TPDB · ' : '') + config.title,
                         results: data.results,
                         total_pages: 1,
                         params: {}
@@ -478,7 +533,14 @@
         }
 
         function loadSearch(complete, error) {
-            request({ page: 1, q: object.search_query, year: object.filter_year, genre: object.filter_genre }, function (data) {
+            request({
+                page: 1,
+                q: object.search_query,
+                year: object.filter_year,
+                genre: object.filter_genre,
+                duration: object.filter_duration,
+                sort: object.filter_sort || 'popular'
+            }, function (data) {
                 if (!data.results.length) return error('Ничего не найдено');
                 complete([{
                     title: (data.fallback === 'tpdb' ? 'Резерв TPDB · ' : '') + 'Результаты поиска: ' + object.search_query,
@@ -520,7 +582,7 @@
     }
 
     function confirmAge() {
-        if (Lampa.Storage.get('adult_catalog_age_confirmed', false)) return openCatalog('', '', '', 'auto');
+        if (Lampa.Storage.get('adult_catalog_age_confirmed', false)) return openCatalog('', '', '', 'auto', '', 'popular');
         var controller = Lampa.Controller.enabled().name;
         Lampa.Select.show({
             title: 'Раздел только для совершеннолетних',
@@ -532,7 +594,7 @@
                 Lampa.Controller.toggle(controller);
                 if (item.action === 'accept') {
                     Lampa.Storage.set('adult_catalog_age_confirmed', true);
-                    openCatalog('', '', '', 'auto');
+                    openCatalog('', '', '', 'auto', '', 'popular');
                 }
             },
             onBack: function () { Lampa.Controller.toggle(controller); }
