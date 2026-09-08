@@ -2,8 +2,8 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.13.0';
-    var COMPONENT_ID = 'adult_catalog_component_1130';
+    var VERSION = '1.13.1';
+    var COMPONENT_ID = 'adult_catalog_component_1131';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
@@ -82,6 +82,11 @@
 
     function showSources(movie) {
         var controller = Lampa.Controller.enabled().name;
+        // The standard Full screen may trigger this button from its own source
+        // selector. Returning to that now-hidden `select` controller leaves the
+        // remote captured by an invisible layer after an external player exits.
+        // The actual owner of this button is the Full card controller.
+        if (controller === 'select') controller = 'full_start';
         var seen = {};
         var items = [];
 
@@ -116,7 +121,6 @@
             items: items,
             onSelect: function (item) {
                 Lampa.Controller.toggle(controller);
-                if (Lampa.Activity && Lampa.Activity.mixState) Lampa.Activity.mixState();
                 playDirect(movie, item.source);
             },
             onBack: function () { Lampa.Controller.toggle(controller); }
