@@ -2,8 +2,8 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.15.0';
-    var COMPONENT_ID = 'adult_catalog_component_1150';
+    var VERSION = '1.16.0';
+    var COMPONENT_ID = 'adult_catalog_component_1160';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
@@ -519,9 +519,10 @@
         function loadHome(complete, error) {
             var selectedDuration = object.filter_duration || '';
             var selectedSort = object.filter_sort || 'popular';
-            var configs = object.filter_source === 'russian' ? [{
-                title: 'Русская озвучка · полнометражные фильмы', duration: 'feature'
-            }] : selectedDuration ? [{
+            var configs = object.filter_source === 'russian' ? [
+                { title: 'На русском · полнометражные фильмы', duration: 'feature', catalog: 'russian' },
+                { title: 'Большой каталог · до 100 полнометражных фильмов', duration: 'feature', catalog: 'full' }
+            ] : selectedDuration ? [{
                 title: optionTitle(DURATION_OPTIONS, selectedDuration, 'Видео') + ' · до 60 карточек',
                 duration: selectedDuration
             }] : [
@@ -548,7 +549,8 @@
                     year: object.filter_year,
                     genre: object.filter_genre,
                     duration: config.duration,
-                    sort: selectedSort
+                    sort: selectedSort,
+                    catalog: config.catalog || ''
                 }, function (data) {
                     successes++;
                     rows[index] = {

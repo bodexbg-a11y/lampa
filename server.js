@@ -257,7 +257,7 @@ function decodeHtml(value) {
         }
         return named[code.toLowerCase()] || entity;
     });
-    if (/[ÃÂ]/.test(decoded)) {
+    if (/[ÃÂÐÑ]/.test(decoded)) {
         try { decoded = Buffer.from(decoded, 'latin1').toString('utf8'); } catch (error) {}
     }
     return decoded;
@@ -909,6 +909,14 @@ const EPORNER_RUSSIAN_QUERIES = [
     'russian version'
 ];
 
+const EPORNER_FULL_QUERIES = [
+    'full movie',
+    'vintage full movie',
+    'classic full movie',
+    'feature film',
+    'complete movie'
+];
+
 const EPORNER_TITLE_TRANSLATIONS = {
     'Apocalyptic Sex': 'Апокалиптический секс',
     'Paris Porn': 'Парижское порно',
@@ -968,8 +976,8 @@ function mapEpornerMovie(item) {
     const year = yearMatch ? yearMatch[1] : '';
     const keywords = cleanText(decodeHtml(item.keywords), 1200).split(',').map((tag) => tag.trim()).filter(Boolean).slice(0, 30);
     const image = item.default_thumb && /^https?:\/\//i.test(item.default_thumb.src || '') ? item.default_thumb.src : '';
-    const language = /russian dub|russian narrator|russian version/i.test(`${originalTitle} ${keywords.join(' ')}`)
-        ? 'Русская озвучка' : 'Русская тематика';
+    const language = /russian dub|russian narrator|russian version|russian full movie/i.test(`${originalTitle} ${keywords.join(' ')}`)
+        ? 'Русская озвучка' : 'Оригинальная озвучка';
     return {
         id: epornerId(id),
         eporner_id: id,
@@ -1013,11 +1021,12 @@ async function epornerCatalog(url, res) {
     const year = cleanYear(url.searchParams.get('year'));
     const genre = cleanText(url.searchParams.get('genre'), 30).toLowerCase();
     const validGenre = Object.prototype.hasOwnProperty.call(PEERTUBE_GENRES, genre) ? genre : '';
-    const cacheKey = `eporner-catalog:v1:${page}:${query}:${year}:${validGenre}`;
+    const catalog = cleanText(url.searchParams.get('catalog'), 20).toLowerCase() === 'full' ? 'full' : 'russian';
+    const cacheKey = `eporner-catalog:v2:${catalog}:${page}:${query}:${year}:${validGenre}`;
     const cached = cache.get(cacheKey);
     if (cached && Date.now() - cached.time < CACHE_TTL_MS) return json(res, 200, cached.value);
 
-    const terms = query ? [query] : EPORNER_RUSSIAN_QUERIES;
+    const terms = query ? [query] : (catalog === 'full' ? EPORNER_FULL_QUERIES : EPORNER_RUSSIAN_QUERIES);
     const settled = await Promise.allSettled(terms.map((term) => fetchEpornerSearch(term, page)));
     const seen = new Set();
     let results = [];
@@ -1027,7 +1036,7 @@ async function epornerCatalog(url, res) {
             const title = cleanText(decodeHtml(item.title), 500);
             const safety = `${title} ${cleanText(decodeHtml(item.keywords), 1200)}`;
             if (!item.id || seen.has(item.id) || Number(item.length_sec || 0) < 3600 || !safeAdultText(safety)) return;
-            if (!query && !/russian (dub|narrator|version|full movie)|russian village/i.test(safety)) return;
+            if (!query && catalog === 'russian' && !/russian (dub|narrator|version|full movie)|russian village/i.test(safety)) return;
             seen.add(item.id);
             results.push(mapEpornerMovie(item));
         });
@@ -1035,7 +1044,8 @@ async function epornerCatalog(url, res) {
     if (year) results = results.filter((item) => item.year === year);
     if (validGenre) results = results.filter((item) => item.genres.includes(validGenre));
     results.sort((a, b) => b.rating - a.rating || b.duration - a.duration);
-    const payload = { results, page, total_pages: results.length ? page + 1 : page, total: results.length, source: 'eporner' };
+    results = results.slice(0, 100);
+    const payload = { results, page, total_pages: results.length ? page + 1 : page, total: results.length, source: 'eporner', catalog };
     cache.set(cacheKey, { time: Date.now(), value: payload });
     if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
     return json(res, 200, payload);
