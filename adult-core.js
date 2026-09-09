@@ -2,8 +2,8 @@
 (function () {
     'use strict';
 
-    var VERSION = '1.14.0';
-    var COMPONENT_ID = 'adult_catalog_component_1140';
+    var VERSION = '1.15.0';
+    var COMPONENT_ID = 'adult_catalog_component_1150';
     var API_BASE = String(window.ADULT_CATALOG_API_BASE || 'https://lampa-kakm.onrender.com').replace(/\/$/, '');
     var initialized = false;
     var detailCache = {};
@@ -40,6 +40,9 @@
         movie.background_image = movie.background || movie.poster;
         movie.params = movie.params || {};
         movie.sources = movie.sources || [];
+        movie.sources.forEach(function (source) {
+            if (source && /^\//.test(source.url || '')) source.url = API_BASE + source.url;
+        });
         return movie;
     }
 
@@ -99,7 +102,7 @@
 
         add('TPDB — официальное превью', movie.preview_url);
         (movie.sources || []).forEach(function (source) {
-            if (source && (source.kind === 'preview' || source.kind === 'direct')) {
+            if (source && (source.kind === 'preview' || source.kind === 'direct' || source.kind === 'proxy')) {
                 add(source.title || 'Прямое видео', source.url);
             }
         });
@@ -207,8 +210,7 @@
                 var network = new Lampa.Reguest();
                 network.timeout(20000);
                 var id = String(params.id || '');
-                var endpoint = id.indexOf('pt-') === 0 ? '/api/peertube/video' :
-                    (id.indexOf('ia-') === 0 ? '/api/archive/video' : '/api/movie');
+                var endpoint = detailEndpoint(id);
                 network.silent(apiUrl(endpoint, { id: params.id }), function (response) {
                     var movie;
                     try {
@@ -238,10 +240,11 @@
             container.find('.adult-catalog-source').remove();
             var sourceName = movie.catalog_type === 'peertube' ? 'PeerTube' :
                 (movie.catalog_type === 'archive' ? 'Internet Archive' :
-                    (movie.catalog_type === 'scatgoon' ? 'ScatGoon' : 'TPDB'));
+                    (movie.catalog_type === 'eporner' ? 'Русские полнометражные' :
+                        (movie.catalog_type === 'scatgoon' ? 'ScatGoon' : 'TPDB')));
             body.find('.source--name').first().text(sourceName);
             var hasDirect = isDirectVideo(movie.preview_url) || (movie.sources || []).some(function (source) {
-                return source && (source.kind === 'preview' || source.kind === 'direct') && isDirectVideo(source.url);
+                return source && (source.kind === 'preview' || source.kind === 'direct' || source.kind === 'proxy') && isDirectVideo(source.url);
             });
             if (!hasDirect) return;
             var button = $('<div class="full-start__button selector adult-catalog-source">' +
@@ -257,6 +260,14 @@
         openDetails(movie);
     }
 
+    function detailEndpoint(id) {
+        id = String(id || '');
+        if (id.indexOf('pt-') === 0) return '/api/peertube/video';
+        if (id.indexOf('ia-') === 0) return '/api/archive/video';
+        if (id.indexOf('ep-') === 0) return '/api/eporner/video';
+        return '/api/movie';
+    }
+
     function openMovie(movie) {
         if (movie.catalog_type === 'scatgoon') return showDetails(movie);
         var network = new Lampa.Reguest();
@@ -265,8 +276,7 @@
             Lampa.Loading.stop();
         });
         network.timeout(20000);
-        var endpoint = movie.catalog_type === 'peertube' ? '/api/peertube/video' :
-            (movie.catalog_type === 'archive' ? '/api/archive/video' : '/api/movie');
+        var endpoint = detailEndpoint(movie.id);
         network.silent(apiUrl(endpoint, { id: movie.id }), function (response) {
             Lampa.Loading.stop();
             try {
@@ -324,12 +334,18 @@
         { title: 'По названию', value: 'title' }
     ];
 
+    var SOURCE_OPTIONS = [
+        { title: 'Русские полнометражные', value: 'russian' },
+        { title: 'Internet Archive', value: 'archive' },
+        { title: 'PeerTube', value: 'peertube' }
+    ];
+
     function optionTitle(items, value, fallback) {
         var selected = items.filter(function (item) { return item.value === (value || ''); })[0];
         return selected ? selected.title : fallback;
     }
 
-    function openCatalog(search, year, genre, quality, duration, sort, replace) {
+    function openCatalog(search, year, genre, quality, duration, sort, source, replace) {
         var title = 'Полное 18+';
         if (search) title += ' — ' + search;
         var activity = {
@@ -342,6 +358,7 @@
             filter_quality: quality || 'auto',
             filter_duration: duration || '',
             filter_sort: sort || 'popular',
+            filter_source: source || 'russian',
             page: 1
         };
         if (replace && Lampa.Activity.replace) Lampa.Activity.replace(activity, true);
@@ -358,7 +375,7 @@
         }, function (value) {
             Lampa.Controller.toggle(controller);
             openCatalog((value || '').trim(), object.filter_year, object.filter_genre, object.filter_quality,
-                object.filter_duration, object.filter_sort, true);
+                object.filter_duration, object.filter_sort, object.filter_source, true);
         });
     }
 
@@ -380,6 +397,9 @@
         } else if (type === 'sort') {
             title = 'Сортировка каталога';
             items = SORT_OPTIONS.slice();
+        } else if (type === 'source') {
+            title = 'Источник каталога';
+            items = SOURCE_OPTIONS.slice();
         } else {
             title = 'Предпочитаемое качество';
             items = QUALITY_OPTIONS.slice();
@@ -387,7 +407,7 @@
         items.forEach(function (item) {
             var selected = type === 'year' ? object.filter_year : (type === 'genre' ? object.filter_genre :
                 (type === 'quality' ? object.filter_quality :
-                    (type === 'duration' ? object.filter_duration : object.filter_sort)));
+                    (type === 'duration' ? object.filter_duration : (type === 'source' ? object.filter_source : object.filter_sort))));
             item.selected = item.value === (selected || (type === 'quality' ? 'auto' : (type === 'sort' ? 'popular' : '')));
         });
         Lampa.Select.show({
@@ -403,6 +423,7 @@
                     type === 'quality' ? item.value : object.filter_quality,
                     type === 'duration' ? item.value : object.filter_duration,
                     type === 'sort' ? item.value : object.filter_sort,
+                    type === 'source' ? item.value : object.filter_source,
                     true
                 );
             },
@@ -422,9 +443,11 @@
         var qualityButton = genreButton.clone().removeClass('filter--filter').addClass('adult-filter--quality');
         var durationButton = genreButton.clone().removeClass('filter--filter').addClass('adult-filter--duration');
         var sortButton = genreButton.clone().removeClass('filter--filter').addClass('adult-filter--sort');
+        var sourceButton = genreButton.clone().removeClass('filter--filter').addClass('adult-filter--source');
         genreButton.after(qualityButton);
         qualityButton.after(durationButton);
         durationButton.after(sortButton);
+        sortButton.after(sourceButton);
 
         searchButton.off('hover:enter').on('hover:enter', function () { askSearch(object); });
         searchButton.find('div').text(object.search_query || 'Поиск').removeClass('hide');
@@ -445,6 +468,9 @@
         sortButton.off('hover:enter').on('hover:enter', function () { chooseFilter(object, 'sort'); });
         sortButton.find('span').text('Сортировка');
         sortButton.find('div').text(optionTitle(SORT_OPTIONS, object.filter_sort || 'popular', 'По популярности')).removeClass('hide');
+        sourceButton.off('hover:enter').on('hover:enter', function () { chooseFilter(object, 'source'); });
+        sourceButton.find('span').text('Источник');
+        sourceButton.find('div').text(optionTitle(SOURCE_OPTIONS, object.filter_source || 'russian', 'Русские полнометражные')).removeClass('hide');
         return filter;
     }
 
@@ -482,7 +508,9 @@
 
         function request(params, complete, error) {
             network.timeout(25000);
-            network.silent(apiUrl('/api/archive', params), function (response) {
+            var endpoint = object.filter_source === 'peertube' ? '/api/peertube' :
+                (object.filter_source === 'archive' ? '/api/archive' : '/api/eporner');
+            network.silent(apiUrl(endpoint, params), function (response) {
                 try { complete(parseResponse(response)); }
                 catch (e) { error('Сервер вернул некорректный ответ'); }
             }, function () { error('Не удалось подключиться к серверу каталога'); });
@@ -491,7 +519,9 @@
         function loadHome(complete, error) {
             var selectedDuration = object.filter_duration || '';
             var selectedSort = object.filter_sort || 'popular';
-            var configs = selectedDuration ? [{
+            var configs = object.filter_source === 'russian' ? [{
+                title: 'Русская озвучка · полнометражные фильмы', duration: 'feature'
+            }] : selectedDuration ? [{
                 title: optionTitle(DURATION_OPTIONS, selectedDuration, 'Видео') + ' · до 60 карточек',
                 duration: selectedDuration
             }] : [
@@ -582,7 +612,7 @@
     }
 
     function confirmAge() {
-        if (Lampa.Storage.get('adult_catalog_age_confirmed', false)) return openCatalog('', '', '', 'auto', '', 'popular');
+        if (Lampa.Storage.get('adult_catalog_age_confirmed', false)) return openCatalog('', '', '', 'auto', 'feature', 'popular', 'russian');
         var controller = Lampa.Controller.enabled().name;
         Lampa.Select.show({
             title: 'Раздел только для совершеннолетних',
@@ -594,7 +624,7 @@
                 Lampa.Controller.toggle(controller);
                 if (item.action === 'accept') {
                     Lampa.Storage.set('adult_catalog_age_confirmed', true);
-                    openCatalog('', '', '', 'auto', '', 'popular');
+                    openCatalog('', '', '', 'auto', 'feature', 'popular', 'russian');
                 }
             },
             onBack: function () { Lampa.Controller.toggle(controller); }

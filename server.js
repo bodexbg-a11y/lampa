@@ -4,12 +4,15 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const { URL } = require('node:url');
+const { Readable } = require('node:stream');
 
 const PORT = Number(process.env.PORT || 3000);
 const TPDB_API_BASE = String(process.env.TPDB_API_BASE || 'https://api.theporndb.net').replace(/\/$/, '');
 const TPDB_API_TOKEN = String(process.env.TPDB_API_TOKEN || '');
 const PEERTUBE_BASE = String(process.env.PEERTUBE_BASE || 'https://peertube.boooks.lol').replace(/\/$/, '');
+const PEERTUBE_SEARCH_BASE = 'https://search.joinpeertube.org';
 const ARCHIVE_BASE = 'https://archive.org';
+const EPORNER_BASE = 'https://www.eporner.com';
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const CACHE_MAX = 200;
 const RATE_LIMIT = 90;
@@ -79,6 +82,11 @@ function cleanYear(value) {
     const year = Number.parseInt(value || '', 10);
     const maximum = new Date().getUTCFullYear() + 1;
     return Number.isFinite(year) && year >= 1900 && year <= maximum ? String(year) : '';
+}
+
+function safeAdultText(value) {
+    const text = normalized(value);
+    return !/(^| )(child|children|underage|minor|preteen|schoolgirl)( |$)/.test(text);
 }
 
 function normalized(value) {
@@ -336,10 +344,35 @@ async function scatgoon(url, res) {
     return json(res, 200, payload);
 }
 
-function peerTubeImage(value) {
+function peerTubeImage(value, base = PEERTUBE_BASE) {
     const path = cleanText(value, 600);
     if (!path) return '';
-    try { return new URL(path, PEERTUBE_BASE).href; } catch (error) { return ''; }
+    try { return new URL(path, base).href; } catch (error) { return ''; }
+}
+
+function peerTubeOrigin(item) {
+    let host = cleanText(item && item.account && item.account.host, 253).toLowerCase();
+    if (!host && item && item.url) {
+        try { host = new URL(item.url).hostname.toLowerCase(); } catch (error) {}
+    }
+    if (!/^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(host)) return '';
+    return `https://${host}`;
+}
+
+function peerTubeGlobalId(host, uuid) {
+    return `pt-${Buffer.from(`${host}|${uuid}`, 'utf8').toString('base64url')}`;
+}
+
+function peerTubeGlobalData(value) {
+    const encoded = cleanText(value, 600).replace(/^pt-/, '');
+    try {
+        const decoded = Buffer.from(encoded, 'base64url').toString('utf8');
+        const split = decoded.lastIndexOf('|');
+        const origin = peerTubeOrigin({ account: { host: decoded.slice(0, split) } });
+        const uuid = decoded.slice(split + 1);
+        if (split < 1 || !origin || !/^[a-f0-9-]{20,80}$/i.test(uuid)) return null;
+        return { origin, uuid };
+    } catch (error) { return null; }
 }
 
 const PEERTUBE_GENRES = {
@@ -631,6 +664,8 @@ async function archiveVideo(url, res) {
 
 function mapPeerTubeVideo(item, detailed = false) {
     const uuid = cleanText(item.uuid || item.shortUUID, 80);
+    const origin = peerTubeOrigin(item) || PEERTUBE_BASE;
+    const host = new URL(origin).hostname;
     const tags = Array.isArray(item.tags) ? item.tags.map((tag) => cleanText(tag, 100)).filter(Boolean) : [];
     const account = cleanText(item.account && (item.account.displayName || item.account.name), 150);
     const category = cleanText(item.category && item.category.label, 100);
@@ -667,14 +702,14 @@ function mapPeerTubeVideo(item, detailed = false) {
     }
 
     return {
-        id: `pt-${uuid}`,
+        id: peerTubeGlobalId(host, uuid),
         peer_uuid: uuid,
         title: cleanText(item.name || item.title, 300) || 'Без названия',
         date: year ? `${year}-01-01` : (/^\d{4}-\d{2}-\d{2}/.test(published) ? published.slice(0, 10) : ''),
         year,
         description: cleanText(item.description || item.truncatedDescription, 4000),
-        poster: peerTubeImage(item.thumbnailPath || item.previewPath),
-        background: peerTubeImage(item.previewPath || item.thumbnailPath),
+        poster: peerTubeImage(item.thumbnailPath || item.previewPath, origin),
+        background: peerTubeImage(item.previewPath || item.thumbnailPath, origin),
         rating: 0,
         duration,
         studio: account || 'PeerTube',
@@ -682,7 +717,7 @@ function mapPeerTubeVideo(item, detailed = false) {
         tags: tags.slice(0, 30),
         genres,
         performers: account ? [account] : [],
-        source_url: uuid ? `${PEERTUBE_BASE}/w/${encodeURIComponent(uuid)}` : '',
+        source_url: uuid ? (cleanText(item.url, 1000) || `${origin}/w/${encodeURIComponent(uuid)}`) : '',
         preview_url: '',
         sources,
         catalog_type: 'peertube'
@@ -695,24 +730,30 @@ async function peerTubeCatalog(url, res) {
     const year = cleanYear(url.searchParams.get('year'));
     const genre = cleanText(url.searchParams.get('genre'), 30).toLowerCase();
     const validGenre = Object.prototype.hasOwnProperty.call(PEERTUBE_GENRES, genre) ? genre : '';
-    const count = 24;
-    const target = new URL(query ? '/api/v1/search/videos' : '/api/v1/videos', PEERTUBE_BASE);
+    const duration = cleanText(url.searchParams.get('duration'), 20).toLowerCase();
+    const count = 60;
+    const target = new URL('/api/v1/search/videos', PEERTUBE_SEARCH_BASE);
     const locallyFiltered = Boolean(year || validGenre);
     target.searchParams.set('start', locallyFiltered ? '0' : String((page - 1) * count));
     target.searchParams.set('count', locallyFiltered ? '100' : String(count));
     target.searchParams.set('sort', '-publishedAt');
     target.searchParams.set('nsfw', 'true');
-    target.searchParams.set('isLocal', 'true');
-    target.searchParams.set('hasHLSFiles', 'true');
+    target.searchParams.set('isLive', 'false');
+    if (duration === 'feature') target.searchParams.set('durationMin', '3600');
+    if (duration === 'medium') {
+        target.searchParams.set('durationMin', '1200');
+        target.searchParams.set('durationMax', '3599');
+    }
+    if (duration === 'short') target.searchParams.set('durationMax', '1199');
     if (query) target.searchParams.set('search', query);
 
-    const cacheKey = `peertube:v2:${page}:${query}:${year}:${validGenre}`;
+    const cacheKey = `peertube:v3:${page}:${query}:${year}:${validGenre}:${duration}`;
     const cached = cache.get(cacheKey);
     if (cached && Date.now() - cached.time < CACHE_TTL_MS) return json(res, 200, cached.value);
     const response = await fetchPage(target, 'application/json');
     const upstream = await response.json();
     let results = (Array.isArray(upstream.data) ? upstream.data : [])
-        .filter((item) => item && item.nsfw === true)
+        .filter((item) => item && item.nsfw === true && safeAdultText(`${item.name} ${item.description || item.truncatedDescription || ''}`))
         .map((item) => mapPeerTubeVideo(item));
     if (year) results = results.filter((item) => item.year === year);
     if (validGenre) results = results.filter((item) => item.genres.includes(validGenre));
@@ -726,12 +767,13 @@ async function peerTubeCatalog(url, res) {
 }
 
 async function peerTubeVideo(url, res) {
-    const uuid = cleanText(url.searchParams.get('id'), 80).replace(/^pt-/, '');
-    if (!/^[a-f0-9-]{20,80}$/i.test(uuid)) return json(res, 400, { error: 'Invalid PeerTube id' });
-    const cacheKey = `peertube-video:v1:${uuid}`;
+    const decoded = peerTubeGlobalData(url.searchParams.get('id'));
+    if (!decoded) return json(res, 400, { error: 'Invalid PeerTube id' });
+    const { origin, uuid } = decoded;
+    const cacheKey = `peertube-video:v2:${origin}:${uuid}`;
     const cached = cache.get(cacheKey);
     if (cached && Date.now() - cached.time < CACHE_TTL_MS) return json(res, 200, cached.value);
-    const target = new URL(`/api/v1/videos/${encodeURIComponent(uuid)}`, PEERTUBE_BASE);
+    const target = new URL(`/api/v1/videos/${encodeURIComponent(uuid)}`, origin);
     const response = await fetchPage(target, 'application/json');
     const upstream = await response.json();
     if (!upstream || upstream.nsfw !== true) return json(res, 404, { error: 'Video is unavailable' });
@@ -860,6 +902,236 @@ async function searchRedtube(query, year) {
         .slice(0, 10);
 }
 
+const EPORNER_RUSSIAN_QUERIES = [
+    'russian dub',
+    'russian narrator',
+    'russian full movie',
+    'russian version'
+];
+
+const EPORNER_TITLE_TRANSLATIONS = {
+    'Apocalyptic Sex': 'Апокалиптический секс',
+    'Paris Porn': 'Парижское порно',
+    'An Erotic Journey': 'Эротическое путешествие',
+    "Every Man's Dream": 'Мечта каждого мужчины',
+    'Carnal Games': 'Плотские игры',
+    'Muffin Man': 'Маффин-мэн',
+    'Lady Love': 'Леди Лав',
+    'Ibiza Vacation': 'Каникулы на Ибице',
+    "Ed's Russian Ladies 8": 'Русские девушки Эда 8',
+    'Cops In Hungary': 'Полицейские в Венгрии',
+    'The Truck Driver': 'Водитель грузовика',
+    'Double Life': 'Двойная жизнь',
+    'Porn Damage': 'Порноповреждение',
+    'Lustful Witches Of The Russian Village': 'Похотливые ведьмы русской деревни'
+};
+
+function epornerId(value) {
+    return `ep-${cleanText(value, 100)}`;
+}
+
+function epornerVideoId(value) {
+    const id = cleanText(value, 120).replace(/^ep-/, '');
+    return /^[a-zA-Z0-9]{5,30}$/.test(id) ? id : '';
+}
+
+function epornerRussianTitle(value) {
+    let title = cleanText(decodeHtml(value), 300);
+    Object.keys(EPORNER_TITLE_TRANSLATIONS).forEach((english) => {
+        title = title.replace(new RegExp(english.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), EPORNER_TITLE_TRANSLATIONS[english]);
+    });
+    return title
+        .replace(/Russian Full Movie/gi, 'полный фильм на русском')
+        .replace(/Russian Dub Subs/gi, 'русская озвучка и субтитры')
+        .replace(/Russian Dub/gi, 'русская озвучка')
+        .replace(/Russian Narrator/gi, 'русский перевод')
+        .replace(/Russian Version/gi, 'русская версия')
+        .replace(/Full Movie/gi, 'полный фильм')
+        .replace(/Vintage/gi, 'ретро')
+        .replace(/recolored/gi, 'восстановленный цвет')
+        .replace(/RESTORED/gi, 'реставрация')
+        .replace(/AI upscaled/gi, 'улучшено ИИ')
+        .replace(/\band\b/gi, 'и')
+        .replace(/Int'l/gi, 'международный')
+        .replace(/Italy/gi, 'Италия')
+        .replace(/France/gi, 'Франция')
+        .replace(/Switzerland/gi, 'Швейцария')
+        .replace(/Sweden/gi, 'Швеция')
+        .replace(/USA/gi, 'США');
+}
+
+function mapEpornerMovie(item) {
+    const id = cleanText(item.id, 100);
+    const originalTitle = cleanText(decodeHtml(item.title), 300);
+    const duration = Number(item.length_sec || 0);
+    const yearMatch = originalTitle.match(/(?:^|[^0-9])((?:19|20)\d{2})(?:[^0-9]|$)/);
+    const year = yearMatch ? yearMatch[1] : '';
+    const keywords = cleanText(decodeHtml(item.keywords), 1200).split(',').map((tag) => tag.trim()).filter(Boolean).slice(0, 30);
+    const image = item.default_thumb && /^https?:\/\//i.test(item.default_thumb.src || '') ? item.default_thumb.src : '';
+    const language = /russian dub|russian narrator|russian version/i.test(`${originalTitle} ${keywords.join(' ')}`)
+        ? 'Русская озвучка' : 'Русская тематика';
+    return {
+        id: epornerId(id),
+        eporner_id: id,
+        title: epornerRussianTitle(originalTitle) || 'Без названия',
+        original_title: originalTitle,
+        date: year ? `${year}-01-01` : cleanText(item.added, 10),
+        year,
+        description: `${language}. Полнометражное видео, продолжительность ${Math.floor(duration / 60)} мин.`,
+        poster: image,
+        background: image,
+        rating: Number(item.rate || 0),
+        duration,
+        duration_group: 'feature',
+        studio: 'Eporner',
+        directors: [],
+        tags: [language, 'Полнометражный фильм'].concat(keywords),
+        genres: peerTubeGenres({ title: originalTitle, description: keywords.join(' ') }, year, keywords),
+        performers: [],
+        source_url: '',
+        preview_url: '',
+        sources: [],
+        catalog_type: 'eporner'
+    };
+}
+
+async function fetchEpornerSearch(query, page = 1) {
+    const target = new URL('/api/v2/video/search/', EPORNER_BASE);
+    target.searchParams.set('query', query);
+    target.searchParams.set('per_page', '100');
+    target.searchParams.set('page', String(page));
+    target.searchParams.set('thumbsize', 'medium');
+    target.searchParams.set('order', 'best');
+    const response = await fetchPage(target, 'application/json');
+    const upstream = await response.json();
+    return Array.isArray(upstream.videos) ? upstream.videos : [];
+}
+
+async function epornerCatalog(url, res) {
+    const page = Math.max(1, Math.min(cleanPage(url.searchParams.get('page')), 20));
+    const query = cleanText(url.searchParams.get('q'), 120);
+    const year = cleanYear(url.searchParams.get('year'));
+    const genre = cleanText(url.searchParams.get('genre'), 30).toLowerCase();
+    const validGenre = Object.prototype.hasOwnProperty.call(PEERTUBE_GENRES, genre) ? genre : '';
+    const cacheKey = `eporner-catalog:v1:${page}:${query}:${year}:${validGenre}`;
+    const cached = cache.get(cacheKey);
+    if (cached && Date.now() - cached.time < CACHE_TTL_MS) return json(res, 200, cached.value);
+
+    const terms = query ? [query] : EPORNER_RUSSIAN_QUERIES;
+    const settled = await Promise.allSettled(terms.map((term) => fetchEpornerSearch(term, page)));
+    const seen = new Set();
+    let results = [];
+    settled.forEach((entry) => {
+        if (entry.status !== 'fulfilled') return;
+        entry.value.forEach((item) => {
+            const title = cleanText(decodeHtml(item.title), 500);
+            const safety = `${title} ${cleanText(decodeHtml(item.keywords), 1200)}`;
+            if (!item.id || seen.has(item.id) || Number(item.length_sec || 0) < 3600 || !safeAdultText(safety)) return;
+            if (!query && !/russian (dub|narrator|version|full movie)|russian village/i.test(safety)) return;
+            seen.add(item.id);
+            results.push(mapEpornerMovie(item));
+        });
+    });
+    if (year) results = results.filter((item) => item.year === year);
+    if (validGenre) results = results.filter((item) => item.genres.includes(validGenre));
+    results.sort((a, b) => b.rating - a.rating || b.duration - a.duration);
+    const payload = { results, page, total_pages: results.length ? page + 1 : page, total: results.length, source: 'eporner' };
+    cache.set(cacheKey, { time: Date.now(), value: payload });
+    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+    return json(res, 200, payload);
+}
+
+function epornerHash(value) {
+    if (!/^[a-f0-9]{32}$/i.test(value || '')) return '';
+    return [0, 8, 16, 24].map((start) => Number.parseInt(value.slice(start, start + 8), 16).toString(36)).join('');
+}
+
+async function epornerSources(id) {
+    const cacheKey = `eporner-sources:v1:${id}`;
+    const cached = cache.get(cacheKey);
+    if (cached && Date.now() - cached.time < CACHE_TTL_MS) return cached.value;
+    const embed = new URL(`/embed/${encodeURIComponent(id)}/`, EPORNER_BASE);
+    const page = await fetchPage(embed);
+    const html = (await page.text()).slice(0, 500000);
+    const rawHash = (html.match(/EP\.video\.player\.hash\s*=\s*['"]([a-f0-9]{32})/i) || [])[1] || '';
+    const dataVid = decodeHtml((html.match(/data-vid=['"]([^'"]+)['"]/i) || [])[1] || '');
+    const hash = epornerHash(rawHash);
+    if (!hash || !new RegExp(`^${id}/${id}\\.mp4$`, 'i').test(dataVid)) throw new Error('Eporner player data is unavailable');
+    const target = new URL(`/xhr/video/${dataVid}`, EPORNER_BASE);
+    target.searchParams.set('hash', hash);
+    target.searchParams.set('domain', 'www.eporner.com');
+    target.searchParams.set('pixelRatio', '1');
+    target.searchParams.set('playerWidth', '1920');
+    target.searchParams.set('playerHeight', '1080');
+    target.searchParams.set('fallback', 'false');
+    target.searchParams.set('embed', 'true');
+    target.searchParams.set('supportedFormats', 'hls,mp4');
+    const response = await fetch(target, {
+        headers: { Accept: 'application/json', Referer: embed.href, 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) Chrome/131 Safari/537.36' }
+    });
+    if (!response.ok) throw new Error(`Eporner player returned HTTP ${response.status}`);
+    const data = await response.json();
+    if (!data || data.available !== true || !data.sources || !data.sources.mp4) throw new Error('Eporner stream is unavailable');
+    const sources = Object.keys(data.sources.mp4).map((name) => {
+        const source = data.sources.mp4[name] || {};
+        const quality = cleanText(source.labelShort || name, 30).replace(/[^0-9]/g, '') || 'auto';
+        return { quality, title: `Eporner MP4 — ${cleanText(source.labelShort || name, 50)}`, upstream: cleanText(source.src, 1500) };
+    }).filter((source) => /^https:\/\/[^/]+\.eporner\.com\//i.test(source.upstream));
+    if (!sources.length) throw new Error('Eporner MP4 is unavailable');
+    cache.set(cacheKey, { time: Date.now(), value: sources });
+    if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+    return sources;
+}
+
+async function epornerVideo(url, res) {
+    const id = epornerVideoId(url.searchParams.get('id'));
+    if (!id) return json(res, 400, { error: 'Invalid Eporner id' });
+    const target = new URL('/api/v2/video/id/', EPORNER_BASE);
+    target.searchParams.set('id', id);
+    target.searchParams.set('thumbsize', 'medium');
+    const response = await fetchPage(target, 'application/json');
+    const item = await response.json();
+    if (!item || Number(item.length_sec || 0) < 3600 || !safeAdultText(`${item.title} ${item.keywords}`)) return json(res, 404, { error: 'Video is unavailable' });
+    const result = mapEpornerMovie(item);
+    const sources = await epornerSources(id);
+    result.sources = sources.map((source) => ({
+        title: source.title,
+        url: `/api/eporner/stream.mp4?id=${encodeURIComponent(id)}&quality=${encodeURIComponent(source.quality)}`,
+        kind: 'proxy'
+    }));
+    return json(res, 200, { result });
+}
+
+async function epornerStream(req, url, res) {
+    const id = epornerVideoId(url.searchParams.get('id'));
+    const quality = cleanText(url.searchParams.get('quality'), 10).replace(/[^0-9]/g, '') || 'auto';
+    if (!id) return json(res, 400, { error: 'Invalid Eporner id' });
+    const sources = await epornerSources(id);
+    const selected = sources.find((source) => source.quality === quality) || sources[0];
+    const headers = {
+        Accept: '*/*',
+        Referer: `${EPORNER_BASE}/embed/${id}/`,
+        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) Chrome/131 Safari/537.36'
+    };
+    if (req.headers.range) headers.Range = req.headers.range;
+    const upstream = await fetch(selected.upstream, { headers, redirect: 'follow' });
+    if (!upstream.ok && upstream.status !== 206) return json(res, 502, { error: `Video CDN returned HTTP ${upstream.status}` });
+    const responseHeaders = {
+        'Content-Type': upstream.headers.get('content-type') || 'video/mp4',
+        'Accept-Ranges': upstream.headers.get('accept-ranges') || 'bytes',
+        'Access-Control-Allow-Origin': '*',
+        'Cache-Control': 'no-store',
+        'X-Content-Type-Options': 'nosniff'
+    };
+    ['content-length', 'content-range'].forEach((name) => {
+        const value = upstream.headers.get(name);
+        if (value) responseHeaders[name] = value;
+    });
+    res.writeHead(upstream.status, responseHeaders);
+    if (!upstream.body) return res.end();
+    Readable.fromWeb(upstream.body).on('error', () => res.destroy()).pipe(res);
+}
+
 async function searchEporner(query, year) {
     const target = new URL('https://www.eporner.com/api/v2/video/search/');
     target.searchParams.set('query', query);
@@ -940,6 +1212,9 @@ const server = http.createServer(async (req, res) => {
         if (url.pathname === '/api/movies') return await movies(url, res);
         if (url.pathname === '/api/movie') return await movie(url, res);
         if (url.pathname === '/api/scatgoon') return await scatgoon(url, res);
+        if (url.pathname === '/api/eporner') return await epornerCatalog(url, res);
+        if (url.pathname === '/api/eporner/video') return await epornerVideo(url, res);
+        if (url.pathname === '/api/eporner/stream.mp4') return await epornerStream(req, url, res);
         if (url.pathname === '/api/archive') {
             try {
                 return await archiveCatalog(url, res);
